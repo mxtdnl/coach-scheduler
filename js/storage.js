@@ -1,6 +1,13 @@
 // localStorage read/write helpers.
-// Per SPEC.md §2, only settings are persisted here (start date, mode, FTE
-// values, custom export mapping). Uploaded data is never persisted.
+// Per SPEC.md §2, only settings are persisted here: start date, mode, FTE
+// values, and the custom export mapping — the four keys in STORAGE_KEYS and
+// nothing else. Uploaded data is held in memory only and never written here.
+//
+// Every access goes through readRaw/writeRaw so that a browser which refuses
+// localStorage (private mode, disabled storage, quota exhausted) produces a
+// visible message rather than a silent no-op (SPEC.md §6).
+
+import { showWarning, describeError } from './errors.js';
 
 const KEYS = {
   START_DATE: 'coachScheduler.startDate',
@@ -9,44 +16,86 @@ const KEYS = {
   FTE: 'coachScheduler.fte',
 };
 
+/** The complete set of keys this app is allowed to write (SPEC.md §2). */
+export const STORAGE_KEYS = Object.values(KEYS);
+
+function readRaw(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch (error) {
+    showWarning(
+      'Saved settings could not be read, so defaults are being used. Scheduling still works.',
+      describeError(error),
+      'storage:read'
+    );
+    return null;
+  }
+}
+
+function writeRaw(key, value) {
+  try {
+    localStorage.setItem(key, value);
+    return true;
+  } catch (error) {
+    showWarning(
+      'This setting could not be saved for next time, so it will be lost when you reload. Everything on screen still works.',
+      describeError(error),
+      'storage:write'
+    );
+    return false;
+  }
+}
+
 export function getStartDate() {
-  return localStorage.getItem(KEYS.START_DATE);
+  return readRaw(KEYS.START_DATE);
 }
 
 export function setStartDate(isoDate) {
-  localStorage.setItem(KEYS.START_DATE, isoDate);
+  writeRaw(KEYS.START_DATE, isoDate);
 }
 
 export function getMode() {
-  return localStorage.getItem(KEYS.MODE);
+  return readRaw(KEYS.MODE);
 }
 
 export function setMode(mode) {
-  localStorage.setItem(KEYS.MODE, mode);
+  writeRaw(KEYS.MODE, mode);
 }
 
 /** The customisable export mapping (SPEC.md §7.2), or null if unset/invalid. */
 export function getExportMapping() {
-  const raw = localStorage.getItem(KEYS.EXPORT_MAPPING);
+  const raw = readRaw(KEYS.EXPORT_MAPPING);
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed : null;
-  } catch {
+  } catch (error) {
+    showWarning(
+      'The saved export layout could not be read, so the default columns are being used.',
+      describeError(error),
+      'storage:mapping'
+    );
     return null;
   }
 }
 
 export function setExportMapping(mapping) {
-  localStorage.setItem(KEYS.EXPORT_MAPPING, JSON.stringify(mapping));
+  writeRaw(KEYS.EXPORT_MAPPING, JSON.stringify(mapping));
 }
 
 /** coach name → FTE (SPEC.md §5.1: persisted to localStorage keyed by coach name). */
 export function getFteMap() {
+  const raw = readRaw(KEYS.FTE);
+  if (!raw) return {};
   try {
-    const parsed = JSON.parse(localStorage.getItem(KEYS.FTE));
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch (error) {
+    showWarning(
+      'The saved FTE values could not be read, so every coach starts at 1.00.',
+      describeError(error),
+      'storage:fte'
+    );
     return {};
   }
 }
@@ -54,5 +103,16 @@ export function getFteMap() {
 export function setFte(coachName, value) {
   const map = getFteMap();
   map[coachName] = value;
-  localStorage.setItem(KEYS.FTE, JSON.stringify(map));
+  writeRaw(KEYS.FTE, JSON.stringify(map));
+}
+
+/** Removes exactly the four settings keys — used by "Start over" (SPEC.md §2). */
+export function clearSettings() {
+  try {
+    STORAGE_KEYS.forEach((key) => localStorage.removeItem(key));
+    return true;
+  } catch (error) {
+    showWarning('Saved settings could not be cleared.', describeError(error), 'storage:clear');
+    return false;
+  }
 }
