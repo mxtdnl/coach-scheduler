@@ -1,6 +1,53 @@
 /* Term Scheduler visual system — see DESIGN.md (normative) and mockup.html.
    Tokens (§1) → layout (§2) → components (§3) → responsive/quality floor (§5). */
 
+/* ---------- §1 Typefaces ---------- */
+
+/* The two DESIGN.md §1 faces, served from /fonts rather than Google Fonts:
+   SPEC.md §2 allows exactly one external request (the SheetJS CDN), so the
+   app makes no other network call and the type is right offline too.
+   Schibsted Grotesk and Spline Sans Mono are SIL Open Font Licence 1.1. */
+
+@font-face {
+  font-family: "Schibsted Grotesk";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("fonts/schibsted-grotesk-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Schibsted Grotesk";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("fonts/schibsted-grotesk-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF,
+    U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
+@font-face {
+  font-family: "Spline Sans Mono";
+  font-style: normal;
+  font-weight: 400 500;
+  font-display: swap;
+  src: url("fonts/spline-sans-mono-latin.woff2") format("woff2");
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329,
+    U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "Spline Sans Mono";
+  font-style: normal;
+  font-weight: 400 500;
+  font-display: swap;
+  src: url("fonts/spline-sans-mono-latin-ext.woff2") format("woff2");
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF,
+    U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
+
 /* ---------- §1 Tokens ---------- */
 
 :root {
@@ -746,6 +793,132 @@ input:focus {
   border-bottom: 1px solid var(--line-50);
 }
 
+/* ---------- Alerts (SPEC.md §6: nothing fails silently) ---------- */
+
+/* Pinned top-centre so a failure is seen wherever the page is scrolled.
+   Same tinted-border language as the per-file validation lists (§3.5). */
+.alerts {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(680px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.alert {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 12px 16px;
+  border: 1px solid var(--err);
+  background: var(--err-tint);
+  color: var(--err);
+  border-radius: var(--radius-control);
+  box-shadow: var(--shadow-card);
+  pointer-events: auto;
+}
+
+.alert-warning {
+  border-color: var(--warn);
+  background: var(--warn-tint);
+  color: var(--warn);
+}
+
+.alert-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.alert-summary {
+  font-weight: 500;
+}
+
+.alert-detail {
+  margin-top: 4px;
+  overflow-wrap: anywhere;
+}
+
+.alert-dismiss {
+  flex: none;
+  border: 1px solid currentColor;
+  border-radius: var(--radius-control);
+  background: none;
+  color: inherit;
+  font: 500 13px/18px var(--ui);
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.noscript-notice {
+  margin: 0;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--err);
+  background: var(--err-tint);
+  color: var(--err);
+}
+
+.dropzone-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ---------- Start over dialog ---------- */
+
+.dialog {
+  width: min(480px, calc(100vw - 32px));
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  color: var(--ink);
+  font: 400 14px/22px var(--ui);
+}
+
+.dialog::backdrop {
+  background: rgb(32 36 44 / 32%);
+}
+
+.dialog h2 {
+  font: 700 17px/24px var(--ui);
+}
+
+.checkbox-field {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+
+.checkbox-field input {
+  width: 16px;
+  height: 16px;
+  margin: 3px 0 0;
+  flex: none;
+}
+
+.checkbox-field small {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--ink-2);
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 24px;
+}
+
 /* ---------- Step flow ---------- */
 
 .step-panel[hidden] {
@@ -757,12 +930,20 @@ input:focus {
   left: var(--rail-width);
   right: 0;
   bottom: 0;
+  /* Above the sticky table headers (z-index 1), which otherwise paint over
+     the footer and swallow clicks on its buttons. */
+  z-index: 20;
   display: flex;
   justify-content: flex-end;
   gap: 12px;
   padding: 12px 32px;
   background: var(--surface);
   border-top: 1px solid var(--line);
+}
+
+/* Pushes Back/Continue right, leaving "Start over" on its own at the left. */
+.app-footer-spacer {
+  flex: 1;
 }
 
 /* ---------- §5 Quality floor ---------- */

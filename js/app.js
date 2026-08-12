@@ -12,7 +12,18 @@ import {
   setFte,
   getExportMapping,
   setExportMapping,
+  clearSettings,
 } from './storage.js';
+import {
+  installGlobalErrorHandlers,
+  showError,
+  clearAlerts,
+  guard,
+  guardAsync,
+  guarded,
+  describeError,
+} from './errors.js';
+import { isXLSXAvailable, XLSX_MISSING_MESSAGE } from './xlsx-loader.js';
 import { renderTermRibbon } from './ribbon.js';
 import {
   parseClassSchedule,
@@ -29,7 +40,18 @@ import {
   MAX_STUDENTS_PER_SLOT,
   REASONS,
 } from './scheduler.js';
-import { getDefaultMapping, createConstantColumn, buildPreviewRows, exportAppointments, FIELD_LABELS } from './exporter.js';
+import {
+  getDefaultMapping,
+  createConstantColumn,
+  buildPreviewRows,
+  exportAppointments,
+  sanitiseMapping,
+  FIELD_LABELS,
+} from './exporter.js';
+
+// Installed before anything else runs, so a failure during start-up is
+// reported rather than leaving a blank page (SPEC.md §6).
+installGlobalErrorHandlers();
 
 const STEPS = ['setup', 'upload', 'review', 'results'];
 
@@ -43,21 +65,42 @@ const UPLOAD_PARSERS = {
   pairings: parsePairings,
 };
 
+/** Human names for the four uploads, used in messages. */
+const UPLOAD_LABELS = {
+  classSchedule: 'class schedule',
+  coachAvailability: 'coach availability',
+  studentList: 'student list',
+  pairings: 'pairings',
+};
+
+const storedMode = getMode();
+
 const state = {
   stepIndex: 0,
   startDate: getStartDate() || null, // ISO yyyy-mm-dd, Monday-normalised
-  mode: getMode() || 'auto',
+  mode: storedMode === 'pre-allocated' ? 'pre-allocated' : 'auto',
   uploads: { classSchedule: null, coachAvailability: null, studentList: null, pairings: null },
-  exportMapping: getExportMapping() || getDefaultMapping(),
+  exportMapping: sanitiseMapping(getExportMapping()) || getDefaultMapping(),
 };
 
-const startDateInput = document.getElementById('start-date-input');
-const dateNotice = document.getElementById('date-notice');
-const modeAutoInput = document.getElementById('mode-auto');
-const modePreAllocatedInput = document.getElementById('mode-pre-allocated');
-const pairingsUploadCard = document.getElementById('pairings-upload-card');
-const backBtn = document.getElementById('back-btn');
-const nextBtn = document.getElementById('next-btn');
+/** Looks up a required element, failing with a message that names it. */
+function mustFind(id) {
+  const el = document.getElementById(id);
+  if (!el) throw new Error(`The page is missing the "${id}" element, so the app cannot start.`);
+  return el;
+}
+
+const startDateInput = mustFind('start-date-input');
+const dateNotice = mustFind('date-notice');
+const modeAutoInput = mustFind('mode-auto');
+const modePreAllocatedInput = mustFind('mode-pre-allocated');
+const pairingsUploadCard = mustFind('pairings-upload-card');
+const backBtn = mustFind('back-btn');
+const nextBtn = mustFind('next-btn');
+const startOverBtn = mustFind('start-over-btn');
+const startOverDialog = mustFind('start-over-dialog');
+const startOverForm = mustFind('start-over-form');
+const startOverClearSettings = mustFind('start-over-clear-settings');
 const stepperItems = document.querySelectorAll('.stepper-item');
 const stepPanels = document.querySelectorAll('.step-panel');
 
@@ -89,7 +132,20 @@ function formatReadable(isoDate) {
 
 function handleStartDateChange() {
   const pickedDate = startDateInput.value;
-  if (!pickedDate) return;
+
+  // Clearing the field is a normal thing to do — reflect it rather than
+  // leaving Results showing a schedule built from the old date.
+  if (!pickedDate) {
+    state.startDate = null;
+    setStartDate('');
+    dateNotice.hidden = true;
+    refreshComputedSteps();
+    return;
+  }
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(pickedDate)) {
+    throw new Error(`"${pickedDate}" is not a date the app can read. Use the date picker, or type it as YYYY-MM-DD.`);
+  }
 
   const monday = normaliseToMonday(pickedDate);
   state.startDate = monday;
@@ -141,7 +197,9 @@ function goToStep(index) {
 
 function getUploadElements(key) {
   const dropzone = document.querySelector(`.dropzone[data-upload="${key}"]`);
+  if (!dropzone) throw new Error(`The page is missing the drop zone for the ${UPLOAD_LABELS[key] || key} file.`);
   const card = dropzone.closest('.upload-card');
+  if (!card) throw new Error(`The drop zone for the ${UPLOAD_LABELS[key] || key} file is not inside an upload card.`);
   return {
     dropzone,
     fileInput: dropzone.querySelector('.file-input'),
@@ -250,15 +308,32 @@ function renderUploadResult(key) {
   resultEl.innerHTML = parts.join('');
 }
 
+/**
+ * Reads and validates one upload. Every failure path is visible: a file the
+ * parser rejects shows its errors in the card, and anything unexpected
+ * (unreadable file, missing SheetJS) surfaces as an alert rather than
+ * leaving the drop zone looking as though nothing happened.
+ */
 async function handleFileForKey(key, file) {
-  const result = await UPLOAD_PARSERS[key](file);
-  state.uploads[key] = { fileName: file.name, result };
-  renderUploadResult(key);
+  const label = UPLOAD_LABELS[key] || key;
 
-  // Pairings' displayed warnings depend on these two files; refresh it too.
-  if (key === 'studentList' || key === 'coachAvailability') {
-    renderUploadResult('pairings');
-  }
+  const parsed = await guardAsync(`reading the ${label} file "${file.name}"`, async () => {
+    const parser = UPLOAD_PARSERS[key];
+    if (!parser) throw new Error(`No parser is registered for the ${label} file.`);
+    return parser(file);
+  });
+
+  // guardAsync already reported the problem; leave any previous good upload
+  // in place rather than silently replacing it with nothing.
+  if (!parsed) return;
+
+  state.uploads[key] = { fileName: file.name, result: parsed };
+
+  guard(`showing the results for the ${label} file`, () => {
+    renderUploadResult(key);
+    // Pairings' displayed warnings depend on these two files; refresh it too.
+    if (key === 'studentList' || key === 'coachAvailability') renderUploadResult('pairings');
+  });
 
   refreshComputedSteps();
 }
@@ -275,6 +350,7 @@ function clearAllUploads() {
 
 function setupUpload(key) {
   const { dropzone, fileInput } = getUploadElements(key);
+  const label = UPLOAD_LABELS[key] || key;
 
   fileInput.addEventListener('change', () => {
     const file = fileInput.files[0];
@@ -288,14 +364,32 @@ function setupUpload(key) {
   dropzone.addEventListener('dragleave', () => {
     dropzone.classList.remove('dropzone-active');
   });
-  dropzone.addEventListener('drop', (event) => {
-    event.preventDefault();
-    dropzone.classList.remove('dropzone-active');
-    const file = event.dataTransfer.files[0];
-    if (!file) return;
-    fileInput.files = event.dataTransfer.files;
-    handleFileForKey(key, file);
-  });
+  dropzone.addEventListener(
+    'drop',
+    guarded(`opening the dropped ${label} file`, (event) => {
+      event.preventDefault();
+      dropzone.classList.remove('dropzone-active');
+      const dropped = event.dataTransfer?.files;
+      if (!dropped || dropped.length === 0) {
+        showError(
+          `That drop did not contain a file. Drag an .xlsx file onto the ${label} box, or click it to choose one.`,
+          null,
+          `drop:${key}`
+        );
+        return;
+      }
+      if (dropped.length > 1) {
+        showError(
+          `Only one file can be used for the ${label}. Drop a single .xlsx file.`,
+          `${dropped.length} files were dropped.`,
+          `drop:${key}`
+        );
+        return;
+      }
+      fileInput.files = dropped;
+      handleFileForKey(key, dropped[0]);
+    })
+  );
 }
 
 // ---- Review & Results steps (SPEC.md §5, §6, §9) ----
@@ -304,14 +398,75 @@ function capitalize(text) {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
+const CORE_UPLOAD_KEYS = ['classSchedule', 'coachAvailability', 'studentList'];
+
+/** The uploads the current mode actually uses (SPEC.md §5.2 adds pairings). */
+function relevantUploadKeys() {
+  return state.mode === 'pre-allocated' ? [...CORE_UPLOAD_KEYS, 'pairings'] : CORE_UPLOAD_KEYS;
+}
+
+/**
+ * A file is only fed to the engine once it parses cleanly. A file with
+ * errors is never used half-way: SPEC.md §8 rejects it, and Review/Results
+ * say which file is holding things up rather than quietly scheduling from
+ * whatever rows happened to survive.
+ */
+function isUploadUsable(key) {
+  const upload = state.uploads[key];
+  return Boolean(upload) && upload.result.errors.length === 0;
+}
+
+function missingUploadLabels() {
+  return relevantUploadKeys()
+    .filter((key) => !state.uploads[key])
+    .map((key) => UPLOAD_LABELS[key]);
+}
+
+function erroredUploadLabels() {
+  return relevantUploadKeys()
+    .filter((key) => state.uploads[key] && state.uploads[key].result.errors.length > 0)
+    .map((key) => UPLOAD_LABELS[key]);
+}
+
+function rowsFor(key) {
+  return isUploadUsable(key) ? state.uploads[key].result.rows : [];
+}
+
 function hasCoreUploads() {
-  return Boolean(state.uploads.classSchedule && state.uploads.coachAvailability && state.uploads.studentList);
+  return CORE_UPLOAD_KEYS.every(isUploadUsable);
 }
 
 function hasResultsInputs() {
-  if (!hasCoreUploads()) return false;
-  if (state.mode === 'pre-allocated' && !state.uploads.pairings) return false;
-  return Boolean(state.startDate);
+  return relevantUploadKeys().every(isUploadUsable) && Boolean(state.startDate);
+}
+
+/** Joins ["a", "b", "c"] as "a, b, and c". */
+function listSentence(items) {
+  if (items.length === 0) return '';
+  if (items.length === 1) return items[0];
+  return `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}`;
+}
+
+/**
+ * The one-line explanation of why Review/Results have nothing to show —
+ * always naming the files involved rather than just going blank.
+ */
+function blockedExplanation() {
+  const missing = missingUploadLabels();
+  const errored = erroredUploadLabels();
+  const sentences = [];
+  if (missing.length > 0) {
+    sentences.push(`Upload the ${listSentence(missing)} file${missing.length === 1 ? '' : 's'} on the Upload step.`);
+  }
+  if (errored.length > 0) {
+    sentences.push(
+      `Fix the errors listed on the ${listSentence(errored)} file${errored.length === 1 ? '' : 's'} and upload ${
+        errored.length === 1 ? 'it' : 'them'
+      } again.`
+    );
+  }
+  if (!state.startDate) sentences.push('Choose a term start date on the Setup step.');
+  return sentences.join(' ');
 }
 
 /**
@@ -321,10 +476,10 @@ function hasResultsInputs() {
  * whenever an input changes.
  */
 function computeEngineState() {
-  const availabilityRows = state.uploads.coachAvailability?.result.rows ?? [];
-  const classBlocks = state.uploads.classSchedule?.result.rows ?? [];
-  const studentRows = state.uploads.studentList?.result.rows ?? [];
-  const pairingRows = state.uploads.pairings?.result.rows ?? [];
+  const availabilityRows = rowsFor('coachAvailability');
+  const classBlocks = rowsFor('classSchedule');
+  const studentRows = rowsFor('studentList');
+  const pairingRows = rowsFor('pairings');
 
   const coaches = [];
   const seenCoaches = new Set();
@@ -436,14 +591,15 @@ function renderFteAndCapacityTable(eng) {
 
 function attachFteInputHandlers() {
   document.querySelectorAll('#review-content input.fte').forEach((input) => {
-    input.addEventListener('change', () => {
+    input.addEventListener('change', guarded('saving the FTE value', () => {
       const coach = input.dataset.coach;
       let value = Number(input.value);
       if (!Number.isFinite(value)) value = 1;
       value = Math.round(Math.min(1, Math.max(0.05, value)) * 100) / 100;
+      input.value = value.toFixed(2);
       setFte(coach, value);
       refreshComputedSteps();
-    });
+    }));
   });
 }
 
@@ -530,17 +686,44 @@ function renderPairingsCoverage(eng) {
     </div>`;
 }
 
+/**
+ * Parse warnings from every file the current mode uses, surfaced together on
+ * Review (SPEC.md §6.3) so nothing that was flagged on Upload is lost once
+ * the user has moved on.
+ */
+function renderWarningsCard() {
+  const groups = relevantUploadKeys()
+    .map((key) => ({ key, display: computeDisplayResult(key) }))
+    .filter(({ display }) => display && display.warnings.length > 0);
+
+  if (groups.length === 0) return '';
+
+  const total = groups.reduce((sum, g) => sum + g.display.warnings.length, 0);
+  const lists = groups
+    .map(({ key, display }) => renderIssueList(capitalize(UPLOAD_LABELS[key]), display.warnings, 'warning'))
+    .join('');
+
+  return `
+    <div class="card">
+      <h2>Warnings</h2>
+      <p class="help-text">${total} warning${total === 1 ? '' : 's'} from the uploaded files. Scheduling continues, but check these are intended.</p>
+      ${lists}
+    </div>`;
+}
+
 function renderReview() {
   const container = document.getElementById('review-content');
+  if (!container) throw new Error('The page is missing the "review-content" element.');
   const parts = [];
 
   if (!hasCoreUploads()) {
-    const need =
-      state.mode === 'pre-allocated'
-        ? 'the class schedule, coach availability, student list, and pairings files'
-        : 'the class schedule, coach availability, and student list files';
     const heading = state.mode === 'pre-allocated' ? 'Pairings coverage' : 'Coach capacity';
-    parts.push(`<div class="card"><h2>${heading}</h2><div class="table-wrap"><p class="table-empty">Upload ${need} to see capacity.</p></div></div>`);
+    parts.push(
+      `<div class="card"><h2>${heading}</h2><div class="table-wrap"><p class="table-empty">${escapeHtml(
+        blockedExplanation()
+      )}</p></div></div>`
+    );
+    parts.push(renderWarningsCard());
     container.innerHTML = parts.join('');
     return;
   }
@@ -555,14 +738,20 @@ function renderReview() {
   }
 
   if (state.mode === 'pre-allocated') {
-    if (!state.uploads.pairings) {
-      parts.push(`<div class="card"><h2>Pairings coverage</h2><div class="table-wrap"><p class="table-empty">Upload the pairings file to see coverage.</p></div></div>`);
+    if (!isUploadUsable('pairings')) {
+      parts.push(
+        `<div class="card"><h2>Pairings coverage</h2><div class="table-wrap"><p class="table-empty">${escapeHtml(
+          blockedExplanation()
+        )}</p></div></div>`
+      );
     } else {
       parts.push(renderPairingsCoverage(eng));
     }
   } else {
     parts.push(renderFteAndCapacityTable(eng));
   }
+
+  parts.push(renderWarningsCard());
 
   container.innerHTML = parts.join('');
 
@@ -692,20 +881,35 @@ function attachExportButtonHandler() {
   const btn = document.getElementById('export-btn');
   if (!btn) return;
   btn.addEventListener('click', () => {
-    if (!hasResultsInputs()) return;
-    const eng = computeEngineState();
-    if (eng.appointments.length === 0) return;
-    exportAppointments(eng.appointments, state.exportMapping);
+    // Each refusal says why; the button is never a no-op.
+    if (!hasResultsInputs()) {
+      showError('There is nothing to export yet.', blockedExplanation(), 'export');
+      return;
+    }
+    const eng = guard('rebuilding the schedule for export', computeEngineState);
+    if (!eng) return;
+    if (eng.appointments.length === 0) {
+      showError(
+        'There is nothing to export: no student could be scheduled.',
+        'Check the unassigned students table for the reason.',
+        'export'
+      );
+      return;
+    }
+    guard('creating the Excel file', () => exportAppointments(eng.appointments, state.exportMapping));
   });
 }
 
 function renderResults() {
   const container = document.getElementById('results-content');
   const sub = document.getElementById('results-sub');
+  if (!container || !sub) throw new Error('The page is missing the results content elements.');
 
   if (!hasResultsInputs()) {
     sub.textContent = 'The schedule, exceptions, and export appear here.';
-    container.innerHTML = `<div class="card"><div class="table-wrap"><p class="table-empty">Complete setup and upload to see results.</p></div></div>`;
+    container.innerHTML = `<div class="card"><div class="table-wrap"><p class="table-empty">${escapeHtml(
+      blockedExplanation()
+    )}</p></div></div>`;
     return;
   }
 
@@ -727,14 +931,19 @@ function renderResults() {
  * FTE values, start date, and the export mapping (SPEC.md §5, §6, §7).
  */
 function refreshComputedSteps() {
-  renderReview();
-  renderResults();
+  guard('working out coach capacity', renderReview);
+  guard('building the schedule', renderResults);
 }
 
 // ---- Export settings (SPEC.md §7.2) ----
 
 function persistExportMapping() {
   setExportMapping(state.exportMapping);
+}
+
+/** The preview table follows the mapping, so every edit re-renders Results. */
+function refreshResults() {
+  guard('updating the appointments preview', renderResults);
 }
 
 function moveMappingColumn(index, direction) {
@@ -744,18 +953,18 @@ function moveMappingColumn(index, direction) {
   state.exportMapping.splice(newIndex, 0, col);
   persistExportMapping();
   renderMappingEditor();
-  renderResults();
+  refreshResults();
 }
 
 function removeMappingColumn(index) {
   state.exportMapping.splice(index, 1);
   persistExportMapping();
   renderMappingEditor();
-  renderResults();
+  refreshResults();
 }
 
 function renderMappingEditor() {
-  const tbody = document.getElementById('mapping-tbody');
+  const tbody = mustFind('mapping-tbody');
   tbody.innerHTML = '';
 
   state.exportMapping.forEach((col, index) => {
@@ -768,14 +977,14 @@ function renderMappingEditor() {
     upBtn.textContent = '↑';
     upBtn.setAttribute('aria-label', `Move "${col.header || 'column'}" up`);
     upBtn.disabled = index === 0;
-    upBtn.addEventListener('click', () => moveMappingColumn(index, -1));
+    upBtn.addEventListener('click', guarded('moving a column up', () => moveMappingColumn(index, -1)));
     const downBtn = document.createElement('button');
     downBtn.type = 'button';
     downBtn.className = 'icon-btn';
     downBtn.textContent = '↓';
     downBtn.setAttribute('aria-label', `Move "${col.header || 'column'}" down`);
     downBtn.disabled = index === state.exportMapping.length - 1;
-    downBtn.addEventListener('click', () => moveMappingColumn(index, 1));
+    downBtn.addEventListener('click', guarded('moving a column down', () => moveMappingColumn(index, 1)));
     orderTd.append(upBtn, downBtn);
 
     const includeTd = document.createElement('td');
@@ -783,11 +992,14 @@ function renderMappingEditor() {
     includeCheckbox.type = 'checkbox';
     includeCheckbox.checked = col.included;
     includeCheckbox.setAttribute('aria-label', `Include "${col.header || 'column'}" in the export`);
-    includeCheckbox.addEventListener('change', () => {
-      col.included = includeCheckbox.checked;
-      persistExportMapping();
-      renderResults();
-    });
+    includeCheckbox.addEventListener(
+      'change',
+      guarded('including or excluding a column', () => {
+        col.included = includeCheckbox.checked;
+        persistExportMapping();
+        refreshResults();
+      })
+    );
     includeTd.appendChild(includeCheckbox);
 
     const headerTd = document.createElement('td');
@@ -795,11 +1007,14 @@ function renderMappingEditor() {
     headerInput.type = 'text';
     headerInput.value = col.header;
     headerInput.setAttribute('aria-label', 'Column header');
-    headerInput.addEventListener('input', () => {
-      col.header = headerInput.value;
-      persistExportMapping();
-      renderResults();
-    });
+    headerInput.addEventListener(
+      'input',
+      guarded('renaming a column', () => {
+        col.header = headerInput.value;
+        persistExportMapping();
+        refreshResults();
+      })
+    );
     headerTd.appendChild(headerInput);
 
     const valueTd = document.createElement('td');
@@ -808,11 +1023,14 @@ function renderMappingEditor() {
       valueInput.type = 'text';
       valueInput.value = col.value ?? '';
       valueInput.setAttribute('aria-label', 'Fixed value for every row');
-      valueInput.addEventListener('input', () => {
-        col.value = valueInput.value;
-        persistExportMapping();
-        renderResults();
-      });
+      valueInput.addEventListener(
+        'input',
+        guarded('editing a constant value', () => {
+          col.value = valueInput.value;
+          persistExportMapping();
+          refreshResults();
+        })
+      );
       valueTd.appendChild(valueInput);
     } else {
       const label = document.createElement('span');
@@ -827,7 +1045,7 @@ function renderMappingEditor() {
       removeBtn.type = 'button';
       removeBtn.className = 'btn btn-destructive btn-small';
       removeBtn.textContent = 'Remove';
-      removeBtn.addEventListener('click', () => removeMappingColumn(index));
+      removeBtn.addEventListener('click', guarded('removing a column', () => removeMappingColumn(index)));
       removeTd.appendChild(removeBtn);
     }
 
@@ -837,32 +1055,107 @@ function renderMappingEditor() {
 }
 
 function setupExportSettings() {
-  const toggleBtn = document.getElementById('export-settings-toggle');
-  const body = document.getElementById('export-settings-body');
-  toggleBtn.addEventListener('click', () => {
-    const expanded = toggleBtn.getAttribute('aria-expanded') === 'true';
-    toggleBtn.setAttribute('aria-expanded', String(!expanded));
-    body.hidden = expanded;
-  });
+  const toggleBtn = mustFind('export-settings-toggle');
+  const body = mustFind('export-settings-body');
+  toggleBtn.addEventListener(
+    'click',
+    guarded('opening the export settings', () => {
+      const expanded = toggleBtn.getAttribute('aria-expanded') === 'true';
+      toggleBtn.setAttribute('aria-expanded', String(!expanded));
+      body.hidden = expanded;
+    })
+  );
 
-  document.getElementById('add-constant-btn').addEventListener('click', () => {
-    state.exportMapping.push(createConstantColumn('New column', ''));
-    persistExportMapping();
-    renderMappingEditor();
-    renderResults();
-  });
+  mustFind('add-constant-btn').addEventListener(
+    'click',
+    guarded('adding a constant column', () => {
+      state.exportMapping.push(createConstantColumn('New column', ''));
+      persistExportMapping();
+      renderMappingEditor();
+      refreshResults();
+    })
+  );
 
-  document.getElementById('reset-mapping-btn').addEventListener('click', () => {
-    state.exportMapping = getDefaultMapping();
-    persistExportMapping();
-    renderMappingEditor();
-    renderResults();
-  });
+  mustFind('reset-mapping-btn').addEventListener(
+    'click',
+    guarded('resetting the export columns', () => {
+      state.exportMapping = getDefaultMapping();
+      persistExportMapping();
+      renderMappingEditor();
+      refreshResults();
+    })
+  );
 
   renderMappingEditor();
 }
 
+// ---- Start over ----
+
+/**
+ * Clears the session's in-memory data and, when asked, the saved settings
+ * too. Uploaded rows only ever live in `state.uploads`, so dropping them
+ * (plus resetting the file inputs) is all it takes to leave nothing behind.
+ */
+function startOver(alsoClearSettings) {
+  clearAllUploads();
+  clearAlerts();
+
+  if (alsoClearSettings) {
+    clearSettings();
+    state.startDate = null;
+    state.mode = 'auto';
+    state.exportMapping = getDefaultMapping();
+    startDateInput.value = '';
+    dateNotice.hidden = true;
+    modeAutoInput.checked = true;
+    modePreAllocatedInput.checked = false;
+    pairingsUploadCard.hidden = true;
+    renderMappingEditor();
+  }
+
+  goToStep(0);
+  refreshComputedSteps();
+}
+
+function setupStartOver() {
+  const supportsDialog = typeof startOverDialog.showModal === 'function';
+
+  startOverBtn.addEventListener(
+    'click',
+    guarded('opening the start over dialog', () => {
+      startOverClearSettings.checked = false;
+      if (supportsDialog) {
+        startOverDialog.showModal();
+        return;
+      }
+      // Very old browsers with no <dialog>: same two questions, plain confirms.
+      if (!window.confirm('Start over? This clears the files you have uploaded and the schedule built from them.')) return;
+      startOver(window.confirm('Also clear saved settings (start date, mode, FTE values, and export column layout)?'));
+    })
+  );
+
+  startOverForm.addEventListener(
+    'submit',
+    guarded('starting over', (event) => {
+      const choice = event.submitter ? event.submitter.value : startOverDialog.returnValue;
+      if (choice !== 'confirm') return;
+      startOver(startOverClearSettings.checked);
+    })
+  );
+}
+
 function init() {
+  // SPEC.md §2's one dependency. Without it nothing can be read or written,
+  // so say so up front instead of failing on the first upload.
+  if (!isXLSXAvailable()) {
+    showError(XLSX_MISSING_MESSAGE, null, 'xlsx');
+    document.querySelectorAll('.dropzone').forEach((dropzone) => {
+      dropzone.classList.add('dropzone-disabled');
+      const input = dropzone.querySelector('.file-input');
+      if (input) input.disabled = true;
+    });
+  }
+
   // Restore persisted settings into the controls.
   if (state.startDate) {
     startDateInput.value = state.startDate;
@@ -874,30 +1167,41 @@ function init() {
   }
   pairingsUploadCard.hidden = state.mode !== 'pre-allocated';
 
-  startDateInput.addEventListener('change', handleStartDateChange);
-  modeAutoInput.addEventListener('change', () => handleModeChange('auto'));
-  modePreAllocatedInput.addEventListener('change', () => handleModeChange('pre-allocated'));
+  startDateInput.addEventListener('change', guarded('reading the start date', handleStartDateChange));
+  modeAutoInput.addEventListener('change', guarded('switching to auto-assign mode', () => handleModeChange('auto')));
+  modePreAllocatedInput.addEventListener(
+    'change',
+    guarded('switching to pre-allocated mode', () => handleModeChange('pre-allocated'))
+  );
 
-  backBtn.addEventListener('click', () => goToStep(state.stepIndex - 1));
-  nextBtn.addEventListener('click', () => goToStep(state.stepIndex + 1));
+  backBtn.addEventListener('click', guarded('going back a step', () => goToStep(state.stepIndex - 1)));
+  nextBtn.addEventListener('click', guarded('going to the next step', () => goToStep(state.stepIndex + 1)));
 
   stepperItems.forEach((item) => {
-    item.addEventListener('click', () => goToStep(STEPS.indexOf(item.dataset.step)));
+    item.addEventListener('click', guarded('changing step', () => goToStep(STEPS.indexOf(item.dataset.step))));
     item.style.cursor = 'pointer';
   });
 
-  // Display-only term ribbon (DESIGN.md §3.1) on Review and Results.
-  document.querySelectorAll('.ribbon-mount').forEach((mount) => {
-    renderTermRibbon(mount, { label: 'Term structure' });
+  // Display-only term ribbon (DESIGN.md §3.1) on Review and Results. It is
+  // also the basis for the §11 blocking grid, which reuses ribbon.js.
+  guard('drawing the term ribbon', () => {
+    document.querySelectorAll('.ribbon-mount').forEach((mount) => {
+      renderTermRibbon(mount, { label: 'Term structure' });
+    });
   });
 
-  UPLOAD_KEYS.forEach(setupUpload);
-  document.getElementById('clear-uploads-btn').addEventListener('click', clearAllUploads);
+  UPLOAD_KEYS.forEach((key) => guard(`setting up the ${UPLOAD_LABELS[key]} upload`, () => setupUpload(key)));
+  mustFind('clear-uploads-btn').addEventListener('click', guarded('clearing the uploads', clearAllUploads));
 
-  setupExportSettings();
+  setupStartOver();
+  guard('setting up the export settings panel', setupExportSettings);
 
   renderStep();
   refreshComputedSteps();
 }
 
-init();
+try {
+  init();
+} catch (error) {
+  showError('The app could not start.', describeError(error), 'init');
+}

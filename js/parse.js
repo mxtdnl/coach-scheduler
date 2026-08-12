@@ -7,7 +7,8 @@
 // midnight (integers) so overlap/boundary arithmetic in scheduler.js is
 // simple arithmetic rather than string parsing.
 
-const XLSX = window.XLSX;
+import { getXLSX, XLSX_MISSING } from './xlsx-loader.js';
+import { describeError } from './errors.js';
 
 const DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const DAY_ABBREVIATIONS = { mon: 'Monday', tue: 'Tuesday', wed: 'Wednesday', thu: 'Thursday', fri: 'Friday', sat: 'Saturday', sun: 'Sunday' };
@@ -71,9 +72,14 @@ function parseTimeValue(raw) {
 }
 
 async function readSheetRows(file) {
+  const XLSX = getXLSX();
   const buffer = await file.arrayBuffer();
   const workbook = XLSX.read(buffer, { type: 'array' });
+  if (!workbook.SheetNames || workbook.SheetNames.length === 0) {
+    throw new Error('The workbook has no sheets.');
+  }
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  if (!sheet) throw new Error(`Sheet "${workbook.SheetNames[0]}" could not be read.`);
   return XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true, defval: '' });
 }
 
@@ -92,7 +98,15 @@ async function parseSheet(file, requiredColumns, parseRow) {
   try {
     sheetRows = await readSheetRows(file);
   } catch (e) {
-    addIssue(errors, fileName, null, 'Could not read this file. Make sure it is a valid .xlsx file.');
+    // A missing SheetJS is an app-level problem, not a problem with this
+    // file — let it reach the global error surface unchanged.
+    if (e && e.code === XLSX_MISSING) throw e;
+    addIssue(
+      errors,
+      fileName,
+      null,
+      `Could not read this file. Make sure it is a valid .xlsx file saved from Excel. (${describeError(e)})`
+    );
     return { rows: [], errors, warnings };
   }
 

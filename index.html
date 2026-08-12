@@ -4,13 +4,20 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Term Scheduler</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;700&family=Spline+Sans+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="styles.css" />
+  <!-- SPEC.md §2: SheetJS from CDN is the app's only external request. If it
+       fails to load, app.js says so on screen rather than breaking silently. -->
   <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
 </head>
 <body>
+  <noscript>
+    <p class="noscript-notice">
+      This tool needs JavaScript to read your spreadsheets and build the schedule. Turn JavaScript on for this page and reload.
+    </p>
+  </noscript>
+
+  <div id="app-alerts" class="alerts" role="region" aria-label="Notifications"></div>
+
   <div class="app">
 
     <nav class="rail" aria-label="Progress">
@@ -216,9 +223,32 @@
   </div>
 
   <footer class="app-footer">
+    <button type="button" id="start-over-btn" class="btn btn-destructive">Start over</button>
+    <div class="app-footer-spacer"></div>
     <button type="button" id="back-btn" class="btn btn-secondary">Back</button>
     <button type="button" id="next-btn" class="btn btn-primary">Continue</button>
   </footer>
+
+  <dialog id="start-over-dialog" class="dialog" aria-labelledby="start-over-title">
+    <form method="dialog" id="start-over-form">
+      <h2 id="start-over-title">Start over?</h2>
+      <p class="help-text" id="start-over-body">
+        This clears the files you have uploaded and the schedule built from them. The files on your computer are not
+        touched.
+      </p>
+      <label class="checkbox-field">
+        <input type="checkbox" id="start-over-clear-settings" />
+        <span>
+          Also clear saved settings
+          <small>Term start date, assignment mode, FTE values, and your export column layout.</small>
+        </span>
+      </label>
+      <div class="dialog-actions">
+        <button type="submit" value="cancel" class="btn btn-secondary" id="start-over-cancel">Cancel</button>
+        <button type="submit" value="confirm" class="btn btn-destructive" id="start-over-confirm">Start over</button>
+      </div>
+    </form>
+  </dialog>
 
   <script type="module" src="js/app.js"></script>
 </body>

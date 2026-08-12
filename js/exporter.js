@@ -7,7 +7,7 @@
 // controls inclusion without losing the column's configuration, so a user
 // can re-include it later without re-entering a header/value.
 
-const XLSX = window.XLSX;
+import { getXLSX } from './xlsx-loader.js';
 
 /** Human labels for the §7.1 appointment fields, shown in the mapping editor. */
 export const FIELD_LABELS = {
@@ -37,6 +37,44 @@ const NUMERIC_FIELDS = new Set(['meetingNumber', 'weekNumber', 'durationMins']);
 /** A fresh copy of the §7.1 default mapping — safe to mutate. */
 export function getDefaultMapping() {
   return DEFAULT_MAPPING.map((col) => ({ ...col }));
+}
+
+/**
+ * Validates a mapping restored from localStorage (SPEC.md §7.2). A payload
+ * left over from an older version — or hand-edited — must not silently
+ * produce an export with blank or missing columns, so anything that is not a
+ * recognisable column definition is dropped, and a mapping with nothing
+ * usable left returns null so the caller can fall back to the defaults.
+ */
+export function sanitiseMapping(mapping) {
+  if (!Array.isArray(mapping) || mapping.length === 0) return null;
+
+  const cleaned = mapping
+    .filter((col) => col && typeof col === 'object')
+    .map((col, i) => {
+      if (col.type === 'constant') {
+        return {
+          id: typeof col.id === 'string' ? col.id : `constant-restored-${i}`,
+          type: 'constant',
+          header: String(col.header ?? ''),
+          value: String(col.value ?? ''),
+          included: col.included !== false,
+        };
+      }
+      if (col.type === 'field' && Object.prototype.hasOwnProperty.call(FIELD_LABELS, col.field)) {
+        return {
+          id: col.field,
+          type: 'field',
+          field: col.field,
+          header: String(col.header ?? FIELD_LABELS[col.field]),
+          included: col.included !== false,
+        };
+      }
+      return null;
+    })
+    .filter(Boolean);
+
+  return cleaned.length > 0 ? cleaned : null;
 }
 
 let constantSeq = 0;
@@ -108,7 +146,14 @@ function buildWorkbookAoa(appointments, columns) {
  * Returns the filename used.
  */
 export function exportAppointments(appointments, mapping) {
+  const XLSX = getXLSX();
   const columns = (mapping && mapping.length ? mapping : getDefaultMapping()).filter((col) => col.included);
+  if (columns.length === 0) {
+    throw new Error('Every column is excluded. Include at least one column in Export settings.');
+  }
+  if (!appointments || appointments.length === 0) {
+    throw new Error('There are no appointments to export.');
+  }
   const aoa = buildWorkbookAoa(appointments, columns);
   const worksheet = XLSX.utils.aoa_to_sheet(aoa);
 
