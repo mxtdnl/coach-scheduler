@@ -1,15 +1,34 @@
 // UI wiring, state, step flow (SPEC.md §6).
-// No scheduling logic here: uploads, review, and results are placeholders
-// until later sessions wire up parse.js / scheduler.js / exporter.js.
+// Review and results are placeholders until scheduler.js / exporter.js are
+// wired up in a later session. Upload parsing/validation is implemented
+// here against parse.js.
 
 import { getStartDate, setStartDate, getMode, setMode } from './storage.js';
+import {
+  parseClassSchedule,
+  parseCoachAvailability,
+  parseStudentList,
+  parsePairings,
+  checkPairingsReferences,
+} from './parse.js';
 
 const STEPS = ['setup', 'upload', 'review', 'results'];
+
+// Parsed upload data lives only in memory (state.uploads) for the session —
+// per SPEC.md §2 it must never be written to localStorage.
+const UPLOAD_KEYS = ['classSchedule', 'coachAvailability', 'studentList', 'pairings'];
+const UPLOAD_PARSERS = {
+  classSchedule: parseClassSchedule,
+  coachAvailability: parseCoachAvailability,
+  studentList: parseStudentList,
+  pairings: parsePairings,
+};
 
 const state = {
   stepIndex: 0,
   startDate: getStartDate() || null, // ISO yyyy-mm-dd, Monday-normalised
   mode: getMode() || 'auto',
+  uploads: { classSchedule: null, coachAvailability: null, studentList: null, pairings: null },
 };
 
 const startDateInput = document.getElementById('start-date-input');
@@ -95,6 +114,134 @@ function goToStep(index) {
   renderStep();
 }
 
+// ---- Upload step ----
+
+function getUploadElements(key) {
+  const dropzone = document.querySelector(`.dropzone[data-upload="${key}"]`);
+  const card = dropzone.closest('.upload-card');
+  return {
+    dropzone,
+    fileInput: dropzone.querySelector('.file-input'),
+    filenameEl: dropzone.querySelector('.dropzone-filename'),
+    resultEl: card.querySelector('.upload-result'),
+  };
+}
+
+function escapeHtml(value) {
+  const div = document.createElement('div');
+  div.textContent = value;
+  return div.innerHTML;
+}
+
+function renderIssueList(label, issues) {
+  const items = issues
+    .map((issue) => `<li>${issue.row ? `Row ${issue.row}: ` : ''}${escapeHtml(issue.message)}</li>`)
+    .join('');
+  return `<div class="issue-group"><strong>${label}</strong><ul>${items}</ul></div>`;
+}
+
+/**
+ * For pairings, cross-file reference warnings (SPEC.md §8) depend on
+ * whatever the student list / coach availability uploads currently
+ * contain, so they're computed at display time rather than stored.
+ */
+function computeDisplayResult(key) {
+  const upload = state.uploads[key];
+  if (!upload) return null;
+  if (key !== 'pairings') return upload.result;
+
+  const studentIds = new Set((state.uploads.studentList?.result.rows ?? []).map((r) => r.contactSfId));
+  const coachNames = new Set((state.uploads.coachAvailability?.result.rows ?? []).map((r) => r.coachName));
+  const crossWarnings = checkPairingsReferences(upload.fileName, upload.result.rows, studentIds, coachNames);
+  return {
+    rows: upload.result.rows,
+    errors: upload.result.errors,
+    warnings: [...upload.result.warnings, ...crossWarnings],
+  };
+}
+
+function renderUploadResult(key) {
+  const { filenameEl, resultEl } = getUploadElements(key);
+  const upload = state.uploads[key];
+
+  if (!upload) {
+    filenameEl.hidden = true;
+    filenameEl.textContent = '';
+    resultEl.hidden = true;
+    resultEl.innerHTML = '';
+    resultEl.classList.remove('upload-result-success', 'upload-result-error');
+    return;
+  }
+
+  filenameEl.hidden = false;
+  filenameEl.textContent = upload.fileName;
+
+  const display = computeDisplayResult(key);
+  const hasErrors = display.errors.length > 0;
+
+  resultEl.hidden = false;
+  resultEl.classList.toggle('upload-result-error', hasErrors);
+  resultEl.classList.toggle('upload-result-success', !hasErrors);
+
+  const parts = [];
+  if (hasErrors) {
+    const count = display.errors.length;
+    parts.push(`<p class="upload-result-summary">${count} error${count === 1 ? '' : 's'} found — fix and re-upload.</p>`);
+    parts.push(renderIssueList('Errors', display.errors));
+    if (display.warnings.length > 0) parts.push(renderIssueList('Warnings', display.warnings));
+  } else {
+    const count = display.rows.length;
+    parts.push(`<p class="upload-result-summary">${count} row${count === 1 ? '' : 's'} parsed successfully.</p>`);
+    if (display.warnings.length > 0) parts.push(renderIssueList('Warnings', display.warnings));
+  }
+  resultEl.innerHTML = parts.join('');
+}
+
+async function handleFileForKey(key, file) {
+  const result = await UPLOAD_PARSERS[key](file);
+  state.uploads[key] = { fileName: file.name, result };
+  renderUploadResult(key);
+
+  // Pairings' displayed warnings depend on these two files; refresh it too.
+  if (key === 'studentList' || key === 'coachAvailability') {
+    renderUploadResult('pairings');
+  }
+}
+
+function clearAllUploads() {
+  UPLOAD_KEYS.forEach((key) => {
+    state.uploads[key] = null;
+    const { fileInput } = getUploadElements(key);
+    fileInput.value = '';
+    renderUploadResult(key);
+  });
+}
+
+function setupUpload(key) {
+  const { dropzone, fileInput } = getUploadElements(key);
+
+  fileInput.addEventListener('change', () => {
+    const file = fileInput.files[0];
+    if (file) handleFileForKey(key, file);
+  });
+
+  dropzone.addEventListener('dragover', (event) => {
+    event.preventDefault();
+    dropzone.classList.add('dropzone-active');
+  });
+  dropzone.addEventListener('dragleave', () => {
+    dropzone.classList.remove('dropzone-active');
+  });
+  dropzone.addEventListener('drop', (event) => {
+    event.preventDefault();
+    dropzone.classList.remove('dropzone-active');
+    const file = event.dataTransfer.files[0];
+    if (!file) return;
+    fileInput.files = event.dataTransfer.files;
+    handleFileForKey(key, file);
+  });
+}
+
 function init() {
   // Restore persisted settings into the controls.
   if (state.startDate) {
@@ -118,6 +265,9 @@ function init() {
     item.addEventListener('click', () => goToStep(STEPS.indexOf(item.dataset.step)));
     item.style.cursor = 'pointer';
   });
+
+  UPLOAD_KEYS.forEach(setupUpload);
+  document.getElementById('clear-uploads-btn').addEventListener('click', clearAllUploads);
 
   renderStep();
 }
