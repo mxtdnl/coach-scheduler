@@ -8,7 +8,7 @@ row per meeting, ready to upload or share.
 Everything happens inside your web browser. Your spreadsheets are read on your
 own computer and are never sent anywhere. Closing the tab throws the data away.
 
-**Where to find it:** `https://<your-username>.github.io/coach-scheduler/`
+**Where to find it:** `https://mxtdnl.github.io/coach-scheduler/`
 
 ---
 
