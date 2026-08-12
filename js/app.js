@@ -4,6 +4,7 @@
 // here against parse.js.
 
 import { getStartDate, setStartDate, getMode, setMode } from './storage.js';
+import { renderTermRibbon } from './ribbon.js';
 import {
   parseClassSchedule,
   parseCoachAvailability,
@@ -64,7 +65,7 @@ function toISODate(date) {
 function formatReadable(isoDate) {
   const [year, month, day] = isoDate.split('-').map(Number);
   const date = new Date(year, month - 1, day);
-  return date.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  return date.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
 }
 
 function handleStartDateChange() {
@@ -77,7 +78,7 @@ function handleStartDateChange() {
   startDateInput.value = monday;
 
   if (monday !== pickedDate) {
-    dateNotice.textContent = `Adjusted to ${formatReadable(monday)} — the Monday of that week.`;
+    dateNotice.textContent = `Week 1 will start ${formatReadable(monday)} (moved from your selected date).`;
     dateNotice.hidden = false;
   } else {
     dateNotice.hidden = true;
@@ -105,7 +106,7 @@ function renderStep() {
   });
 
   backBtn.disabled = state.stepIndex === 0;
-  nextBtn.textContent = state.stepIndex === STEPS.length - 1 ? 'Done' : 'Next';
+  nextBtn.textContent = state.stepIndex === STEPS.length - 1 ? 'Done' : 'Continue';
   nextBtn.disabled = state.stepIndex === STEPS.length - 1;
 }
 
@@ -122,7 +123,11 @@ function getUploadElements(key) {
   return {
     dropzone,
     fileInput: dropzone.querySelector('.file-input'),
+    promptEl: dropzone.querySelector('.dropzone-text'),
+    checkEl: dropzone.querySelector('.dropzone-check'),
     filenameEl: dropzone.querySelector('.dropzone-filename'),
+    metaEl: dropzone.querySelector('.dropzone-meta'),
+    replaceEl: dropzone.querySelector('.dropzone-replace'),
     resultEl: card.querySelector('.upload-result'),
   };
 }
@@ -133,11 +138,19 @@ function escapeHtml(value) {
   return div.innerHTML;
 }
 
-function renderIssueList(label, issues) {
+/**
+ * Validation output per DESIGN.md §3.5: a tinted bordered list inside the
+ * file's card, one line per issue, row numbers in mono.
+ */
+function renderIssueList(label, issues, kind) {
   const items = issues
-    .map((issue) => `<li>${issue.row ? `Row ${issue.row}: ` : ''}${escapeHtml(issue.message)}</li>`)
+    .map((issue) => {
+      const rowPrefix = issue.row ? `<span class="issue-row">Row ${issue.row}</span> — ` : '';
+      return `<li>${rowPrefix}${escapeHtml(issue.message)}</li>`;
+    })
     .join('');
-  return `<div class="issue-group"><strong>${label}</strong><ul>${items}</ul></div>`;
+  const groupClass = kind === 'warning' ? 'issue-group issue-group-warning' : 'issue-group';
+  return `<div class="${groupClass}"><div class="issue-group-title">${label}</div><ul class="issue-list">${items}</ul></div>`;
 }
 
 /**
@@ -161,23 +174,38 @@ function computeDisplayResult(key) {
 }
 
 function renderUploadResult(key) {
-  const { filenameEl, resultEl } = getUploadElements(key);
+  const { dropzone, promptEl, checkEl, filenameEl, metaEl, replaceEl, resultEl } = getUploadElements(key);
   const upload = state.uploads[key];
 
   if (!upload) {
+    dropzone.classList.remove('dropzone-loaded');
+    promptEl.hidden = false;
+    checkEl.hidden = true;
     filenameEl.hidden = true;
     filenameEl.textContent = '';
+    metaEl.hidden = true;
+    metaEl.textContent = '';
+    replaceEl.hidden = true;
     resultEl.hidden = true;
     resultEl.innerHTML = '';
     resultEl.classList.remove('upload-result-success', 'upload-result-error');
     return;
   }
 
-  filenameEl.hidden = false;
-  filenameEl.textContent = upload.fileName;
-
   const display = computeDisplayResult(key);
   const hasErrors = display.errors.length > 0;
+  const rowCount = display.rows.length;
+
+  // On success the drop zone collapses to a compact row (§3.4); with errors
+  // it stays open so the file can be replaced straight away.
+  dropzone.classList.toggle('dropzone-loaded', !hasErrors);
+  promptEl.hidden = !hasErrors;
+  checkEl.hidden = hasErrors;
+  replaceEl.hidden = hasErrors;
+  filenameEl.hidden = hasErrors;
+  filenameEl.textContent = upload.fileName;
+  metaEl.hidden = hasErrors;
+  metaEl.textContent = `${rowCount} row${rowCount === 1 ? '' : 's'}`;
 
   resultEl.hidden = false;
   resultEl.classList.toggle('upload-result-error', hasErrors);
@@ -186,13 +214,16 @@ function renderUploadResult(key) {
   const parts = [];
   if (hasErrors) {
     const count = display.errors.length;
-    parts.push(`<p class="upload-result-summary">${count} error${count === 1 ? '' : 's'} found — fix and re-upload.</p>`);
-    parts.push(renderIssueList('Errors', display.errors));
-    if (display.warnings.length > 0) parts.push(renderIssueList('Warnings', display.warnings));
+    parts.push(
+      `<p class="upload-result-summary"><span class="mono-500">${count}</span> error${count === 1 ? '' : 's'} to fix. Correct these rows and upload the file again.</p>`
+    );
+    parts.push(renderIssueList('Errors', display.errors, 'error'));
+    if (display.warnings.length > 0) parts.push(renderIssueList('Warnings', display.warnings, 'warning'));
   } else {
-    const count = display.rows.length;
-    parts.push(`<p class="upload-result-summary">${count} row${count === 1 ? '' : 's'} parsed successfully.</p>`);
-    if (display.warnings.length > 0) parts.push(renderIssueList('Warnings', display.warnings));
+    parts.push(
+      `<p class="upload-result-summary"><span class="mono-500">${rowCount}</span> row${rowCount === 1 ? '' : 's'} read. <span class="chip chip-ok">Ready</span></p>`
+    );
+    if (display.warnings.length > 0) parts.push(renderIssueList('Warnings', display.warnings, 'warning'));
   }
   resultEl.innerHTML = parts.join('');
 }
@@ -264,6 +295,11 @@ function init() {
   stepperItems.forEach((item) => {
     item.addEventListener('click', () => goToStep(STEPS.indexOf(item.dataset.step)));
     item.style.cursor = 'pointer';
+  });
+
+  // Display-only term ribbon (DESIGN.md §3.1) on Review and Results.
+  document.querySelectorAll('.ribbon-mount').forEach((mount) => {
+    renderTermRibbon(mount, { label: 'Term structure' });
   });
 
   UPLOAD_KEYS.forEach(setupUpload);

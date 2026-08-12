@@ -3,166 +3,209 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Coaching Meeting Scheduler</title>
+  <title>Term Scheduler</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;700&family=Spline+Sans+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="styles.css" />
   <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
 </head>
 <body>
-  <header class="app-header">
-    <h1>Coaching Meeting Scheduler</h1>
-    <p class="app-subtitle">Allocate 15-week coaching meetings from Excel uploads. Nothing leaves your browser.</p>
-  </header>
+  <div class="app">
 
-  <nav class="stepper" aria-label="Progress">
-    <ol id="stepper-list">
-      <li class="stepper-item" data-step="setup">
-        <span class="stepper-index">1</span>
-        <span class="stepper-label">Setup</span>
-      </li>
-      <li class="stepper-item" data-step="upload">
-        <span class="stepper-index">2</span>
-        <span class="stepper-label">Upload</span>
-      </li>
-      <li class="stepper-item" data-step="review">
-        <span class="stepper-index">3</span>
-        <span class="stepper-label">Review</span>
-      </li>
-      <li class="stepper-item" data-step="results">
-        <span class="stepper-index">4</span>
-        <span class="stepper-label">Results</span>
-      </li>
-    </ol>
-  </nav>
+    <nav class="rail" aria-label="Progress">
+      <div class="wordmark">Term Scheduler</div>
+      <ol class="rail-steps" id="stepper-list">
+        <li>
+          <button type="button" class="stepper-item" data-step="setup">
+            <span class="stepper-index">1</span>
+            <span class="stepper-label">Setup</span>
+          </button>
+        </li>
+        <li>
+          <button type="button" class="stepper-item" data-step="upload">
+            <span class="stepper-index">2</span>
+            <span class="stepper-label">Upload</span>
+          </button>
+        </li>
+        <li>
+          <button type="button" class="stepper-item" data-step="review">
+            <span class="stepper-index">3</span>
+            <span class="stepper-label">Review</span>
+          </button>
+        </li>
+        <li>
+          <button type="button" class="stepper-item" data-step="results">
+            <span class="stepper-index">4</span>
+            <span class="stepper-label">Results</span>
+          </button>
+        </li>
+      </ol>
+      <p class="rail-note">Runs in your browser. Files are never uploaded to a server.</p>
+    </nav>
 
-  <main class="app-main">
+    <main class="app-main">
 
-    <!-- Step 1: Setup -->
-    <section class="step-panel" data-step="setup">
-      <h2>Setup</h2>
+      <!-- Step 1: Setup -->
+      <section class="step-panel" data-step="setup">
+        <h1 class="page-title">Set up the term</h1>
+        <p class="page-sub">Choose the term start date and how students are matched to coaches.</p>
 
-      <div class="card">
-        <h3>Term start date</h3>
-        <p class="help-text">Pick any date in the first week of the term. It will be normalised to the Monday of that week.</p>
-        <label class="field">
-          <span>Start date</span>
-          <input type="date" id="start-date-input" />
-        </label>
-        <p id="date-notice" class="notice notice-info" hidden></p>
-      </div>
-
-      <div class="card">
-        <h3>Assignment mode</h3>
-        <p class="help-text">Choose how students are matched to coaches.</p>
-        <div class="toggle-group" role="radiogroup" aria-label="Assignment mode">
-          <label class="toggle-option">
-            <input type="radio" name="mode" id="mode-auto" value="auto" />
-            <span>
-              <strong>Auto-assign</strong>
-              <small>Match students to coaches by availability and FTE.</small>
-            </span>
+        <div class="card">
+          <h2>Term start date</h2>
+          <p class="help-text">Pick any date in the first week of the term. It is normalised to the Monday of that week.</p>
+          <label class="field">
+            <span>Start date</span>
+            <input type="date" id="start-date-input" />
           </label>
-          <label class="toggle-option">
-            <input type="radio" name="mode" id="mode-pre-allocated" value="pre-allocated" />
-            <span>
-              <strong>Pre-allocated</strong>
-              <small>Use a pairings file that fixes each student's coach.</small>
-            </span>
-          </label>
+          <p id="date-notice" class="banner banner-inline" hidden></p>
         </div>
-      </div>
 
-      <div class="card">
-        <h3>Templates</h3>
-        <p class="help-text">Download, fill in, and upload these on the next step. Pairings is only needed in pre-allocated mode.</p>
-        <ul class="template-list">
-          <li>
-            <a href="templates/class_schedule_template.xlsx" download>Class schedule template</a>
-          </li>
-          <li>
-            <a href="templates/coach_availability_template.xlsx" download>Coach availability template</a>
-          </li>
-          <li>
-            <a href="templates/students_template.xlsx" download>Student list template</a>
-          </li>
-          <li>
-            <a href="templates/pairings_template.xlsx" download>Pairings template</a>
-          </li>
-        </ul>
-      </div>
-    </section>
+        <div class="card">
+          <h2>Assignment mode</h2>
+          <p class="help-text">Choose how students are matched to coaches.</p>
+          <div class="toggle-group" role="radiogroup" aria-label="Assignment mode">
+            <label class="toggle-option">
+              <input type="radio" name="mode" id="mode-auto" value="auto" />
+              <span>
+                <strong>Auto-assign</strong>
+                <small>Match students to coaches by availability and FTE.</small>
+              </span>
+            </label>
+            <label class="toggle-option">
+              <input type="radio" name="mode" id="mode-pre-allocated" value="pre-allocated" />
+              <span>
+                <strong>Pre-allocated</strong>
+                <small>Use a pairings file that fixes each student's coach.</small>
+              </span>
+            </label>
+          </div>
+        </div>
 
-    <!-- Step 2: Upload -->
-    <section class="step-panel" data-step="upload" hidden>
-      <h2>Upload</h2>
-      <p class="help-text">Drag and drop each file, or click to choose one. Results appear below each file as soon as it's read. Nothing is saved outside this browser tab.</p>
+        <div class="card">
+          <h2>Templates</h2>
+          <p class="help-text">Download, fill in, and upload these on the next step. Pairings is only needed in pre-allocated mode.</p>
+          <ul class="template-list">
+            <li>
+              <a href="templates/class_schedule_template.xlsx" download>Class schedule template</a>
+            </li>
+            <li>
+              <a href="templates/coach_availability_template.xlsx" download>Coach availability template</a>
+            </li>
+            <li>
+              <a href="templates/students_template.xlsx" download>Student list template</a>
+            </li>
+            <li>
+              <a href="templates/pairings_template.xlsx" download>Pairings template</a>
+            </li>
+          </ul>
+        </div>
+      </section>
 
-      <div class="upload-toolbar">
-        <button type="button" id="clear-uploads-btn" class="btn btn-secondary">Clear all uploads</button>
-      </div>
+      <!-- Step 2: Upload -->
+      <section class="step-panel" data-step="upload" hidden>
+        <h1 class="page-title">Upload files</h1>
+        <p class="page-sub">Drag and drop each file, or click to choose one. Each file is checked as soon as it is read.</p>
 
-      <div class="card upload-card">
-        <h3>Class schedule</h3>
-        <label class="dropzone" data-upload="classSchedule">
-          <input type="file" accept=".xlsx" class="file-input" hidden />
-          <span class="dropzone-text">Drag and drop the file here, or click to choose</span>
-          <span class="dropzone-filename" hidden></span>
-        </label>
-        <div class="upload-result" hidden></div>
-      </div>
+        <div class="upload-toolbar">
+          <button type="button" id="clear-uploads-btn" class="btn btn-destructive">Clear all uploads</button>
+        </div>
 
-      <div class="card upload-card">
-        <h3>Coach availability</h3>
-        <label class="dropzone" data-upload="coachAvailability">
-          <input type="file" accept=".xlsx" class="file-input" hidden />
-          <span class="dropzone-text">Drag and drop the file here, or click to choose</span>
-          <span class="dropzone-filename" hidden></span>
-        </label>
-        <div class="upload-result" hidden></div>
-      </div>
+        <div class="card upload-card">
+          <h2>Class schedule</h2>
+          <p class="help-text">Class times that coaching meetings must avoid.</p>
+          <label class="dropzone" data-upload="classSchedule">
+            <input type="file" accept=".xlsx" class="file-input" hidden />
+            <span class="dropzone-text">Drag and drop the file here, or click to choose</span>
+            <span class="dropzone-check" hidden>&#10003;</span>
+            <span class="dropzone-filename" hidden></span>
+            <span class="dropzone-meta" hidden></span>
+            <span class="dropzone-replace" hidden>Replace</span>
+          </label>
+          <div class="upload-result" hidden></div>
+        </div>
 
-      <div class="card upload-card">
-        <h3>Student list</h3>
-        <label class="dropzone" data-upload="studentList">
-          <input type="file" accept=".xlsx" class="file-input" hidden />
-          <span class="dropzone-text">Drag and drop the file here, or click to choose</span>
-          <span class="dropzone-filename" hidden></span>
-        </label>
-        <div class="upload-result" hidden></div>
-      </div>
+        <div class="card upload-card">
+          <h2>Coach availability</h2>
+          <p class="help-text">The weekly windows each coach can meet students in.</p>
+          <label class="dropzone" data-upload="coachAvailability">
+            <input type="file" accept=".xlsx" class="file-input" hidden />
+            <span class="dropzone-text">Drag and drop the file here, or click to choose</span>
+            <span class="dropzone-check" hidden>&#10003;</span>
+            <span class="dropzone-filename" hidden></span>
+            <span class="dropzone-meta" hidden></span>
+            <span class="dropzone-replace" hidden>Replace</span>
+          </label>
+          <div class="upload-result" hidden></div>
+        </div>
 
-      <div class="card upload-card" id="pairings-upload-card" hidden>
-        <h3>Pairings</h3>
-        <p class="help-text">Required in pre-allocated mode.</p>
-        <label class="dropzone" data-upload="pairings">
-          <input type="file" accept=".xlsx" class="file-input" hidden />
-          <span class="dropzone-text">Drag and drop the file here, or click to choose</span>
-          <span class="dropzone-filename" hidden></span>
-        </label>
-        <div class="upload-result" hidden></div>
-      </div>
-    </section>
+        <div class="card upload-card">
+          <h2>Student list</h2>
+          <p class="help-text">One row per student, with the Salesforce contact ID.</p>
+          <label class="dropzone" data-upload="studentList">
+            <input type="file" accept=".xlsx" class="file-input" hidden />
+            <span class="dropzone-text">Drag and drop the file here, or click to choose</span>
+            <span class="dropzone-check" hidden>&#10003;</span>
+            <span class="dropzone-filename" hidden></span>
+            <span class="dropzone-meta" hidden></span>
+            <span class="dropzone-replace" hidden>Replace</span>
+          </label>
+          <div class="upload-result" hidden></div>
+        </div>
 
-    <!-- Step 3: Review -->
-    <section class="step-panel" data-step="review" hidden>
-      <h2>Review</h2>
-      <div class="card">
-        <p class="help-text">The FTE editor and capacity summary will appear here once uploads are parsed and the scheduling engine is wired up (later sessions).</p>
-      </div>
-    </section>
+        <div class="card upload-card" id="pairings-upload-card" hidden>
+          <h2>Pairings</h2>
+          <p class="help-text">Required in pre-allocated mode.</p>
+          <label class="dropzone" data-upload="pairings">
+            <input type="file" accept=".xlsx" class="file-input" hidden />
+            <span class="dropzone-text">Drag and drop the file here, or click to choose</span>
+            <span class="dropzone-check" hidden>&#10003;</span>
+            <span class="dropzone-filename" hidden></span>
+            <span class="dropzone-meta" hidden></span>
+            <span class="dropzone-replace" hidden>Replace</span>
+          </label>
+          <div class="upload-result" hidden></div>
+        </div>
+      </section>
 
-    <!-- Step 4: Results -->
-    <section class="step-panel" data-step="results" hidden>
-      <h2>Results</h2>
-      <div class="card">
-        <p class="help-text">The schedule summary, unassigned-students table, appointment preview, and export button will appear here once the scheduling engine and exporter are implemented (later sessions).</p>
-      </div>
-    </section>
+      <!-- Step 3: Review -->
+      <section class="step-panel" data-step="review" hidden>
+        <h1 class="page-title">Review capacity</h1>
+        <p class="page-sub" id="review-sub">Coach capacity and FTE for the 15 term weeks.</p>
 
-  </main>
+        <div class="ribbon-mount" data-ribbon="review"></div>
+
+        <div class="card">
+          <h2>Coach capacity</h2>
+          <p class="help-text">The FTE editor and capacity summary appear here once the scheduling engine is wired up.</p>
+          <div class="table-wrap">
+            <p class="table-empty">Upload the three files to see capacity.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- Step 4: Results -->
+      <section class="step-panel" data-step="results" hidden>
+        <h1 class="page-title">Results</h1>
+        <p class="page-sub" id="results-sub">The schedule, exceptions, and export appear here.</p>
+
+        <div class="ribbon-mount" data-ribbon="results"></div>
+
+        <div class="card">
+          <h2>Appointments</h2>
+          <p class="help-text">The schedule summary, unassigned students, appointment preview, and export appear here once the scheduling engine and exporter are implemented.</p>
+          <div class="table-wrap">
+            <p class="table-empty">Run the schedule to see appointments.</p>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
 
   <footer class="app-footer">
     <button type="button" id="back-btn" class="btn btn-secondary">Back</button>
-    <button type="button" id="next-btn" class="btn btn-primary">Next</button>
+    <button type="button" id="next-btn" class="btn btn-primary">Continue</button>
   </footer>
 
   <script type="module" src="js/app.js"></script>
