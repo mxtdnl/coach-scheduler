@@ -48,6 +48,7 @@ import {
   expandToAppointments,
   applyBlocks,
   weekAndDayForDate,
+  blockOfWeek,
   EXCLUDED_WEEKS,
   TERM_WEEKS,
   MAX_STUDENTS_PER_SLOT,
@@ -55,9 +56,17 @@ import {
   REASONS,
 } from './scheduler.js';
 import {
+  bookingCoaches,
+  buildCoachBookings,
+  buildStudentTimeline,
+  filterStudents,
+} from './bookings.js';
+import {
   getDefaultMapping,
   createConstantColumn,
   buildPreviewRows,
+  exportableCoachMeetings,
+  exportCoachCalendar,
   exportAppointments,
   exportCoachAssignments,
   buildCoachAssignmentRows,
@@ -108,6 +117,10 @@ const state = {
   // currently editing.
   blocks: [],
   blockingCoach: null,
+  // The Results booking views (SPEC.md §14). Only the current selection lives
+  // here — the bookings themselves are always read from the freshly computed
+  // schedule, never cached.
+  bookings: { view: 'coach', coach: null, studentId: null, studentQuery: '' },
 };
 
 /** Looks up a required element, failing with a message that names it. */
@@ -1611,6 +1624,419 @@ function attachExportButtonHandler() {
   });
 }
 
+// ---- Bookings (SPEC.md §14) ----
+//
+// A read-only inspection view over the finished schedule: pick a coach and see
+// who they are meeting, or pick a student and see their whole term. Both are
+// built from the same appointment rows the export writes (bookings.js), so the
+// screen and the file can never drift apart. Nothing here edits a schedule.
+
+/** The week number as a chip in its term block's colours (DESIGN.md §3.5). */
+function weekChip(week) {
+  const block = blockOfWeek(week);
+  if (!block) return `<span class="mono">${escapeHtml(String(week))}</span>`;
+  return `<span class="chip chip-wk-b${block}">Week ${escapeHtml(String(week))}</span>`;
+}
+
+/** The ICS/ZIP options for the current run: the campus is the meeting's location. */
+function calendarOptions() {
+  const campus = campusOrDefault(state.campusId);
+  return { campusLabel: campus.label, timeZone: campus.timeZone };
+}
+
+function bookingsEmptyState(message) {
+  return `<div class="table-wrap"><p class="table-empty">${escapeHtml(message)}</p></div>`;
+}
+
+/**
+ * One coach's diary: every meeting they have, in date order, with the student
+ * each one is with. The totals answer "how many students, how many hours".
+ */
+function renderCoachBookingsPanel(eng) {
+  const coach = state.bookings.coach;
+  if (!coach) {
+    return bookingsEmptyState('Choose a coach to see the students they are meeting, and when.');
+  }
+
+  const view = buildCoachBookings(eng.appointments, coach);
+  if (view.meetingCount === 0) {
+    return bookingsEmptyState(`${coach} has no meetings in this schedule, so there is nothing to show or export.`);
+  }
+
+  const rows = view.rows
+    .map(
+      (row) => `
+    <tr>
+      <td class="mono">${escapeHtml(row.date)}</td>
+      <td>${escapeHtml(row.day)}</td>
+      <td class="mono">${escapeHtml(row.startTime)}</td>
+      <td class="mono">${escapeHtml(row.endTime)}</td>
+      <td>${escapeHtml(row.studentName)} <span class="mono">${escapeHtml(row.contactSfId)}</span></td>
+      <td>${escapeHtml(row.classBlock || '—')}</td>
+      <td class="mono-500 num">${escapeHtml(String(row.meetingNumber))}</td>
+      <td>${escapeHtml(row.serviceName)}</td>
+      <td>${weekChip(row.weekNumber)}${
+        row.rescheduledFromWeek !== '' && row.rescheduledFromWeek !== undefined
+          ? ` <span class="chip chip-warn">Moved from week ${escapeHtml(String(row.rescheduledFromWeek))}</span>`
+          : ''
+      }</td>
+    </tr>`
+    )
+    .join('');
+
+  const summary = `${view.studentCount} student${view.studentCount === 1 ? '' : 's'} · ${
+    view.meetingCount
+  } coaching appointment${view.meetingCount === 1 ? '' : 's'}`;
+
+  return `
+    <p class="help-text" id="bookings-summary">${escapeHtml(summary)}</p>
+    <div class="table-wrap">
+      <table class="bookings-table">
+        <caption class="visually-hidden">Meetings for ${escapeHtml(coach)}, in date order</caption>
+        <thead>
+          <tr><th>Date</th><th>Day</th><th>Start</th><th>End</th><th>Student</th><th>Class block</th><th class="num">Meeting</th><th>Service name</th><th>Term week</th></tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+/**
+ * One student's term: their own class block's classes and their coaching
+ * meetings on a single timeline, with the coach they were given. A student who
+ * was never assigned still gets their classes and an explicit reason, rather
+ * than an empty panel or an invented meeting.
+ */
+function renderStudentBookingsPanel(eng) {
+  const student = eng.studentRows.find((row) => row.contactSfId === state.bookings.studentId);
+  if (!student) {
+    return bookingsEmptyState('Choose a student to see their classes, their coaching meetings, and their coach.');
+  }
+
+  const view = buildStudentTimeline(student, {
+    appointments: eng.appointments,
+    assignments: eng.assignments,
+    unassigned: eng.unassigned,
+    exceptions: eng.exceptions,
+    classBlocks: eng.classBlocks,
+    startMonday: state.startDate,
+  });
+
+  const coachLine = view.coach
+    ? `Coach: <strong>${escapeHtml(view.coach)}</strong>`
+    : `<span class="chip chip-exception">Unassigned${
+        view.unassignedReason ? ` — ${escapeHtml(view.unassignedReason)}` : ''
+      }</span>`;
+  const blockLine = view.classBlockKnown
+    ? `Class block: <strong>${escapeHtml(view.classBlockName || '(unnamed)')}</strong>`
+    : `<span class="chip chip-exception">Class block ${
+        view.classBlockName ? `"${escapeHtml(view.classBlockName)}" is not in the class schedule` : 'is missing'
+      }</span>`;
+  const exceptionLine =
+    view.exceptions.length > 0
+      ? ` · <span class="chip chip-exception">${view.exceptions.length} meeting${
+          view.exceptions.length === 1 ? '' : 's'
+        } could not be rebooked</span>`
+      : '';
+
+  const header = `
+    <p class="help-text" id="bookings-summary">
+      ${escapeHtml(student.studentName)} <span class="mono">${escapeHtml(student.contactSfId)}</span> ·
+      ${coachLine} · ${blockLine} ·
+      <span class="mono-500">${view.classCount}</span> class session${view.classCount === 1 ? '' : 's'} ·
+      <span class="mono-500">${view.coachingCount}</span> coaching meeting${view.coachingCount === 1 ? '' : 's'}${exceptionLine}
+    </p>`;
+
+  if (view.entries.length === 0) {
+    return `${header}${bookingsEmptyState(
+      'This student has no class sessions and no coaching meetings in this schedule.'
+    )}`;
+  }
+
+  const rows = view.entries
+    .map((entry) => {
+      const typeChip =
+        entry.type === 'class'
+          ? '<span class="chip chip-neutral">Class</span>'
+          : '<span class="chip chip-ok">Coaching</span>';
+      const detail =
+        entry.type === 'class'
+          ? escapeHtml(entry.label || 'Class')
+          : escapeHtml(entry.label);
+      const who = entry.type === 'coaching' ? escapeHtml(entry.coachName) : escapeHtml(entry.classBlock || '—');
+      const moved =
+        entry.type === 'coaching' && entry.rescheduledFromWeek !== '' && entry.rescheduledFromWeek !== undefined
+          ? ` <span class="chip chip-warn">Moved from week ${escapeHtml(String(entry.rescheduledFromWeek))}</span>`
+          : '';
+      return `
+    <tr>
+      <td class="mono">${escapeHtml(entry.date)}</td>
+      <td>${escapeHtml(entry.day)}</td>
+      <td class="mono">${escapeHtml(entry.startTime)}</td>
+      <td class="mono">${escapeHtml(entry.endTime)}</td>
+      <td>${typeChip}</td>
+      <td>${detail}</td>
+      <td>${who}</td>
+      <td>${weekChip(entry.weekNumber)}${moved}</td>
+    </tr>`;
+    })
+    .join('');
+
+  const coachingNote =
+    view.coachingCount === 0
+      ? '<p class="help-text">This student has no coaching meetings in this schedule. Their classes are shown so their week is still complete.</p>'
+      : '';
+
+  return `
+    ${header}
+    ${coachingNote}
+    <div class="table-wrap">
+      <table class="bookings-table">
+        <caption class="visually-hidden">Classes and coaching meetings for ${escapeHtml(
+          student.studentName
+        )}, in date order</caption>
+        <thead>
+          <tr><th>Date</th><th>Day</th><th>Start</th><th>End</th><th>Type</th><th>Class or meeting</th><th>Coach / class block</th><th>Term week</th></tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+function bookingsPanelHtml(eng) {
+  return state.bookings.view === 'student' ? renderStudentBookingsPanel(eng) : renderCoachBookingsPanel(eng);
+}
+
+/** Re-renders just the panel, so the selectors keep their focus and scroll position. */
+function refreshBookingsPanel() {
+  const panel = document.getElementById('bookings-panel');
+  if (!panel) return;
+  const eng = guard('showing the bookings', computeEngineState);
+  if (!eng) return;
+  panel.innerHTML = bookingsPanelHtml(eng);
+  updateCoachCalendarButton(eng);
+}
+
+/**
+ * The coach calendar button (SPEC.md §7.4). It names the selected coach, and
+ * is only enabled when that coach actually has meetings to export — an empty
+ * archive is not a useful download, so the panel says so instead.
+ */
+function updateCoachCalendarButton(eng) {
+  const btn = document.getElementById('export-calendar-btn');
+  if (!btn) return;
+  const coach = state.bookings.coach;
+  // Counted, not serialised: the button's state must not cost a calendar file
+  // per meeting on every re-render.
+  const exportable = coach ? exportableCoachMeetings(eng.appointments, coach) : [];
+  btn.disabled = exportable.length === 0;
+  btn.textContent = 'Export coach calendar (.zip)';
+  btn.setAttribute(
+    'aria-label',
+    coach
+      ? `Download a ZIP of calendar files, one .ics per meeting, for ${coach}`
+      : 'Download a ZIP of calendar files for the selected coach — choose a coach first'
+  );
+  const note = document.getElementById('bookings-export-note');
+  if (note) {
+    const meetings = coach ? buildCoachBookings(eng.appointments, coach).meetingCount : 0;
+    if (!coach) {
+      note.textContent = 'Choose a coach to enable the calendar download.';
+    } else if (exportable.length === 0 && meetings > 0) {
+      note.textContent = `${coach}'s meetings have no usable date and time, so there is nothing to put in a calendar file.`;
+    } else if (exportable.length === 0) {
+      note.textContent = `${coach} has no meetings to export.`;
+    } else {
+      note.textContent = `${exportable.length} calendar file${
+        exportable.length === 1 ? '' : 's'
+      }, one per meeting, in a single .zip.`;
+    }
+  }
+}
+
+/** Fills the student <select> from the current search box contents. */
+function fillStudentOptions(eng) {
+  const select = document.getElementById('bookings-student');
+  if (!select) return;
+  const matches = filterStudents(eng.studentRows, state.bookings.studentQuery);
+  const shown = matches.slice(0, 200);
+  if (!shown.some((student) => student.contactSfId === state.bookings.studentId)) {
+    state.bookings.studentId = null;
+  }
+  const options = [
+    `<option value="">${matches.length === 0 ? 'No students match your search' : 'Choose a student'}</option>`,
+    ...shown.map(
+      (student) =>
+        `<option value="${escapeHtml(student.contactSfId)}">${escapeHtml(student.studentName)} — ${escapeHtml(
+          student.contactSfId
+        )}</option>`
+    ),
+  ];
+  select.innerHTML = options.join('');
+  select.value = state.bookings.studentId || '';
+  select.disabled = matches.length === 0;
+
+  const note = document.getElementById('bookings-student-note');
+  if (note) {
+    note.textContent =
+      matches.length > shown.length
+        ? `Showing the first ${shown.length} of ${matches.length} matching students. Narrow the search to see the rest.`
+        : `${matches.length} student${matches.length === 1 ? '' : 's'} to choose from.`;
+  }
+}
+
+/**
+ * The Bookings card (SPEC.md §14): a two-segment view toggle, a selector for
+ * the chosen side, and one results panel. Built as real elements rather than a
+ * markup string so the controls can be wired without re-rendering the whole of
+ * Results on every keystroke.
+ */
+function renderBookingsSection(eng) {
+  const mount = document.getElementById('bookings-mount');
+  if (!mount) return;
+
+  const isStudentView = state.bookings.view === 'student';
+  const coaches = bookingCoaches(eng.coaches, eng.appointments);
+  if (state.bookings.coach && !coaches.includes(state.bookings.coach)) state.bookings.coach = null;
+
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.innerHTML = `
+    <h2 id="bookings-heading">Bookings</h2>
+    <p class="help-text">Look up the generated schedule from either side: a coach's students, or a student's week. This is a read-only view of the schedule above.</p>
+    <div class="toggle-group bookings-toggle" role="radiogroup" aria-labelledby="bookings-heading">
+      <label class="toggle-option">
+        <input type="radio" name="bookings-view" value="coach"${isStudentView ? '' : ' checked'} />
+        <span><strong>By coach</strong><small>Who is this coach meeting, and when?</small></span>
+      </label>
+      <label class="toggle-option">
+        <input type="radio" name="bookings-view" value="student"${isStudentView ? ' checked' : ''} />
+        <span><strong>By student</strong><small>When does this student have class and coaching?</small></span>
+      </label>
+    </div>
+    <div class="bookings-controls">
+      ${
+        isStudentView
+          ? `<label class="field">
+               <span>Search students</span>
+               <input type="search" id="bookings-student-search" placeholder="Name or Contact SF ID" value="${escapeHtml(
+                 state.bookings.studentQuery
+               )}" aria-describedby="bookings-student-note" />
+             </label>
+             <label class="field">
+               <span>Student</span>
+               <select id="bookings-student"></select>
+             </label>`
+          : `<label class="field">
+               <span>Coach</span>
+               <select id="bookings-coach">
+                 <option value="">${coaches.length === 0 ? 'No coaches in this schedule' : 'Choose a coach'}</option>
+                 ${coaches
+                   .map(
+                     (name) =>
+                       `<option value="${escapeHtml(name)}"${
+                         name === state.bookings.coach ? ' selected' : ''
+                       }>${escapeHtml(name)}</option>`
+                   )
+                   .join('')}
+               </select>
+             </label>
+             <div class="bookings-export">
+               <button type="button" id="export-calendar-btn" class="btn btn-secondary" disabled>Export coach calendar (.zip)</button>
+               <p class="help-text" id="bookings-export-note"></p>
+             </div>`
+      }
+    </div>
+    ${isStudentView ? '<p class="help-text" id="bookings-student-note"></p>' : ''}
+    <div id="bookings-panel" role="region" aria-live="polite" aria-labelledby="bookings-heading"></div>`;
+
+  mount.replaceChildren(card);
+
+  card.querySelectorAll('input[name="bookings-view"]').forEach((radio) => {
+    radio.addEventListener(
+      'change',
+      guarded('switching the bookings view', () => {
+        if (!radio.checked) return;
+        state.bookings.view = radio.value === 'student' ? 'student' : 'coach';
+        const fresh = computeEngineState();
+        renderBookingsSection(fresh);
+        // The card was rebuilt, so move focus back to the segment just chosen.
+        const focused = document.querySelector(`input[name="bookings-view"][value="${state.bookings.view}"]`);
+        if (focused) focused.focus();
+      })
+    );
+  });
+
+  const coachSelect = card.querySelector('#bookings-coach');
+  if (coachSelect) {
+    coachSelect.disabled = coaches.length === 0;
+    coachSelect.addEventListener(
+      'change',
+      guarded('choosing a coach to view', () => {
+        state.bookings.coach = coachSelect.value || null;
+        refreshBookingsPanel();
+      })
+    );
+  }
+
+  const search = card.querySelector('#bookings-student-search');
+  if (search) {
+    search.addEventListener(
+      'input',
+      guarded('searching for a student', () => {
+        state.bookings.studentQuery = search.value;
+        const fresh = computeEngineState();
+        fillStudentOptions(fresh);
+        refreshBookingsPanel();
+      })
+    );
+  }
+
+  const studentSelect = card.querySelector('#bookings-student');
+  if (studentSelect) {
+    fillStudentOptions(eng);
+    studentSelect.addEventListener(
+      'change',
+      guarded('choosing a student to view', () => {
+        state.bookings.studentId = studentSelect.value || null;
+        refreshBookingsPanel();
+      })
+    );
+  }
+
+  const panel = card.querySelector('#bookings-panel');
+  panel.innerHTML = bookingsPanelHtml(eng);
+  updateCoachCalendarButton(eng);
+
+  const exportBtn = card.querySelector('#export-calendar-btn');
+  if (exportBtn) exportBtn.addEventListener('click', guarded('creating the coach calendar', handleCoachCalendarExport));
+}
+
+/** SPEC.md §7.4 — one .ics per meeting for the selected coach, in one .zip. */
+function handleCoachCalendarExport() {
+  if (!hasResultsInputs()) {
+    showError('There is nothing to export yet.', blockedExplanation(), 'export-calendar');
+    return;
+  }
+  const coach = state.bookings.coach;
+  if (!coach) {
+    showError('Choose a coach before exporting a calendar.', null, 'export-calendar');
+    return;
+  }
+  // Rebuilt at click time, so the archive always reflects the current schedule.
+  const eng = guard('rebuilding the schedule for the calendar export', computeEngineState);
+  if (!eng) return;
+  if (exportableCoachMeetings(eng.appointments, coach).length === 0) {
+    showError(
+      `${coach} has no scheduled meetings, so there is nothing to export.`,
+      'Choose a coach with meetings, or check the unassigned students table.',
+      'export-calendar'
+    );
+    return;
+  }
+  guard('creating the coach calendar file', () => exportCoachCalendar(eng.appointments, coach, calendarOptions()));
+}
+
 function renderResults() {
   const container = document.getElementById('results-content');
   const sub = document.getElementById('results-sub');
@@ -1641,12 +2067,16 @@ function renderResults() {
     renderClassBlockResults(eng),
     renderExceptionsTable(eng),
     renderAppointmentsPreview(eng),
+    // The bookings card (SPEC.md §14) is built as elements after this markup
+    // lands, so its selectors can be wired without re-rendering all of Results.
+    '<div id="bookings-mount"></div>',
     renderCoachAssignmentsExport(eng),
   ];
 
   container.innerHTML = parts.join('');
   attachExportButtonHandler();
   attachCoachAssignmentsButtonHandler();
+  guard('showing the bookings', () => renderBookingsSection(eng));
 }
 
 /**
