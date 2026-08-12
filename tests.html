@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scheduler tests — Coaching Meeting Scheduler</title>
+<link rel="stylesheet" href="styles.css">
+<style>
+  .test-summary { font-weight: 600; margin: 1rem 0; padding: 0.75rem 1rem; border-radius: 6px; }
+  .test-summary.pass { background: #e6f6ec; color: #14562c; border: 1px solid #96d4ad; }
+  .test-summary.fail { background: #fdeaea; color: #7a1c1c; border: 1px solid #e8a3a3; }
+  ul.test-list { list-style: none; padding: 0; margin: 0; }
+  ul.test-list li { padding: 0.4rem 0.6rem; border-bottom: 1px solid #e6e6e6; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem; }
+  ul.test-list li.pass { color: #14562c; }
+  ul.test-list li.fail { color: #7a1c1c; background: #fdeaea; }
+  ul.test-list .badge { display: inline-block; min-width: 4.2rem; font-weight: 700; }
+  ul.test-list .detail { display: block; margin-top: 0.25rem; white-space: pre-wrap; }
+  .test-group { margin-top: 1.5rem; font-weight: 600; }
+</style>
+</head>
+<body>
+<main class="container">
+  <h1>Scheduler engine tests</h1>
+  <p>Assertions for <code>js/scheduler.js</code> against SPEC.md §4, §5 and §9. No DOM is touched by the engine itself.</p>
+  <div id="summary" class="test-summary">Running…</div>
+  <ul id="results" class="test-list"></ul>
+</main>
+
+<script type="module">
+import {
+  buildSlots,
+  computeQuotas,
+  schedule,
+  expandToAppointments,
+  weeksForOffset,
+  minutesToTime,
+  REASONS,
+} from './js/scheduler.js';
+
+// ---- tiny assertion harness ----
+
+const results = [];
+let currentGroup = '';
+
+function group(name) { currentGroup = name; }
+
+function test(name, fn) {
+  try {
+    fn();
+    results.push({ group: currentGroup, name, ok: true, detail: '' });
+  } catch (e) {
+    results.push({ group: currentGroup, name, ok: false, detail: e && e.message ? e.message : String(e) });
+  }
+}
+
+function fail(message) { throw new Error(message); }
+
+function assert(condition, message) {
+  if (!condition) fail(message || 'assertion failed');
+}
+
+function assertEqual(actual, expected, message) {
+  if (actual !== expected) fail(`${message || 'values differ'}\n  expected: ${expected}\n  actual:   ${actual}`);
+}
+
+function assertDeep(actual, expected, message) {
+  const a = JSON.stringify(actual);
+  const b = JSON.stringify(expected);
+  if (a !== b) fail(`${message || 'values differ'}\n  expected: ${b}\n  actual:   ${a}`);
+}
+
+// ---- helpers ----
+
+const t = (hhmm) => {
+  const [h, m] = hhmm.split(':').map(Number);
+  return h * 60 + m;
+};
+
+const avail = (coachName, day, start, end, coachId = '') => ({ coachName, coachId, day, start: t(start), end: t(end) });
+const cls = (day, start, end, className = 'Class') => ({ day, start: t(start), end: t(end), className });
+const students = (n, prefix = 'S') =>
+  Array.from({ length: n }, (_, i) => ({ contactSfId: `${prefix}${i + 1}`, studentName: `${prefix}tudent ${i + 1}` }));
+
+const slotLabel = (s) => `${s.coach}/${s.day}/${minutesToTime(s.start)}`;
+
+// Shared fixture used by the mode and invariant tests.
+// Coach A: Mon 09:00–12:00 (Mon class 10:00–11:00 removes 3 windows → 09:00, 11:00)
+//          Wed 09:00–12:00 (Wed class 09:00–10:00 removes 2 windows → 10:00, 10:30, 11:00)
+// Coach B: Tue 09:30–12:30, no classes → 09:30, 10:00, 10:30, 11:00, 11:30
+const FIXTURE_CLASSES = [cls('Monday', '10:00', '11:00', 'Maths'), cls('Wednesday', '09:00', '10:00', 'Physics')];
+const FIXTURE_AVAILABILITY = [
+  avail('Coach A', 'Monday', '09:00', '12:00', 'C-A'),
+  avail('Coach A', 'Wednesday', '09:00', '12:00', 'C-A'),
+  avail('Coach B', 'Tuesday', '09:30', '12:30'),
+];
+const FIXTURE_SLOTS = buildSlots(FIXTURE_AVAILABILITY, FIXTURE_CLASSES);
+const START_MONDAY = '2026-09-07'; // a Monday
+
+function slotCountsOf(slots) {
+  const counts = {};
+  slots.forEach((s) => { counts[s.coach] = (counts[s.coach] || 0) + 1; });
+  return counts;
+}
+
+// ---- §4.4 valid slot definition ----
+
+group('§4.4 — valid slots');
+
+test('60-minute windows tile an availability block on 30-minute boundaries', () => {
+  const slots = buildSlots([avail('C', 'Monday', '09:00', '12:00')], []);
+  assertDeep(slots.map((s) => minutesToTime(s.start)), ['09:00', '09:30', '10:00', '10:30', '11:00']);
+  assert(slots.every((s) => s.end - s.start === 60), 'every slot is 60 minutes long');
+});
+
+test('slots must start on :00 or :30 and fit entirely inside the block', () => {
+  const slots = buildSlots([avail('C', 'Monday', '09:15', '10:30')], []);
+  assertDeep(slots.map((s) => minutesToTime(s.start)), ['09:30'], 'only 09:30 fits inside 09:15–10:30');
+});
+
+test('a block shorter than 60 minutes yields no slots', () => {
+  assertEqual(buildSlots([avail('C', 'Monday', '09:00', '09:45')], []).length, 0);
+});
+
+test('windows overlapping a class block are excluded; touching ones are kept', () => {
+  const slots = buildSlots([avail('C', 'Monday', '09:00', '12:00')], [cls('Monday', '10:00', '11:00')]);
+  assertDeep(slots.map((s) => minutesToTime(s.start)), ['09:00', '11:00'],
+    '09:30/10:00/10:30 overlap the class; 09:00–10:00 and 11:00–12:00 only touch it');
+});
+
+test('a class block on another day does not remove slots', () => {
+  const slots = buildSlots([avail('C', 'Monday', '09:00', '11:00')], [cls('Tuesday', '09:00', '17:00')]);
+  assertEqual(slots.length, 3);
+});
+
+test('slots are ordered by day (Mon→Sun) then start time', () => {
+  const slots = buildSlots([
+    avail('C', 'Wednesday', '09:00', '10:00'),
+    avail('C', 'Monday', '11:00', '12:00'),
+    avail('C', 'Monday', '09:00', '10:00'),
+  ], []);
+  assertDeep(slots.map(slotLabel), ['C/Monday/09:00', 'C/Monday/11:00', 'C/Wednesday/09:00']);
+});
+
+test('overlapping availability rows do not produce duplicate slots', () => {
+  const slots = buildSlots([
+    avail('C', 'Monday', '09:00', '11:00'),
+    avail('C', 'Monday', '10:00', '12:00'),
+  ], []);
+  assertDeep(slots.map((s) => minutesToTime(s.start)), ['09:00', '09:30', '10:00', '10:30', '11:00']);
+});
+
+test('Coach ID from the availability file is carried onto slots', () => {
+  assertEqual(FIXTURE_SLOTS.find((s) => s.coach === 'Coach A').coachId, 'C-A');
+  assertEqual(FIXTURE_SLOTS.find((s) => s.coach === 'Coach B').coachId, '');
+});
+
+test('fixture builds the expected slots for both coaches', () => {
+  assertDeep(FIXTURE_SLOTS.map(slotLabel), [
+    'Coach A/Monday/09:00',
+    'Coach A/Monday/11:00',
+    'Coach B/Tuesday/09:30',
+    'Coach B/Tuesday/10:00',
+    'Coach B/Tuesday/10:30',
+    'Coach B/Tuesday/11:00',
+    'Coach B/Tuesday/11:30',
+    'Coach A/Wednesday/10:00',
+    'Coach A/Wednesday/10:30',
+    'Coach A/Wednesday/11:00',
+  ]);
+});
+
+// ---- §5.1 quota maths ----
+
+group('§5.1 — FTE quotas');
+
+test('equal FTE splits students evenly', () => {
+  const quotas = computeQuotas(['A', 'B'], { A: 1, B: 1 }, 10, { A: 10, B: 10 });
+  assertDeep(quotas, { A: 5, B: 5 });
+});
+
+test('part-time 0.5 FTE coach gets half the full-time share', () => {
+  const quotas = computeQuotas(['A', 'B'], { A: 1, B: 0.5 }, 9, { A: 10, B: 10 });
+  assertDeep(quotas, { A: 6, B: 3 }, '9 × (1/1.5) = 6 and 9 × (0.5/1.5) = 3');
+});
+
+test('largest remainder awards the leftover student to the larger fraction', () => {
+  // 10 × (1/1.5) = 6.67 → 6 r.67; 10 × (0.5/1.5) = 3.33 → 3 r.33; leftover → A.
+  assertDeep(computeQuotas(['A', 'B'], { A: 1, B: 0.5 }, 10, { A: 10, B: 10 }), { A: 7, B: 3 });
+});
+
+test('quotas always sum to the student count when capacity allows', () => {
+  const quotas = computeQuotas(['A', 'B', 'C'], { A: 1, B: 0.5, C: 0.25 }, 17, { A: 10, B: 10, C: 10 });
+  assertEqual(Object.values(quotas).reduce((a, b) => a + b, 0), 17);
+});
+
+test('quota is capped at capacity (valid slots × 3) and the rest redistributed', () => {
+  // A is full-time but has only 1 slot → capacity 3. B (0.5 FTE) absorbs the rest.
+  const quotas = computeQuotas(['A', 'B'], { A: 1, B: 0.5 }, 12, { A: 1, B: 10 });
+  assertDeep(quotas, { A: 3, B: 9 });
+});
+
+test('redistribution respects FTE proportions among coaches with spare capacity', () => {
+  // A capped at 3; the remaining 9 students split 1 : 0.5 between B and C → 6 : 3.
+  const quotas = computeQuotas(['A', 'B', 'C'], { A: 1, B: 1, C: 0.5 }, 12, { A: 1, B: 10, C: 10 });
+  assertDeep(quotas, { A: 3, B: 6, C: 3 });
+});
+
+test('total quota never exceeds total capacity', () => {
+  const quotas = computeQuotas(['A', 'B'], { A: 1, B: 1 }, 40, { A: 2, B: 3 });
+  assertDeep(quotas, { A: 6, B: 9 }, 'capacity is 6 + 9 = 15, well below 40 students');
+});
+
+test('a coach with no valid slots receives a zero quota', () => {
+  assertDeep(computeQuotas(['A', 'B'], { A: 1, B: 1 }, 6, { A: 0, B: 10 }), { A: 0, B: 6 });
+});
+
+test('zero students produces zero quotas', () => {
+  assertDeep(computeQuotas(['A', 'B'], { A: 1, B: 1 }, 0, { A: 5, B: 5 }), { A: 0, B: 0 });
+});
+
+// ---- §5.1 auto mode ----
+
+group('§5.1 — auto-assign mode');
+
+test('students fill each coach up to quota, slot by slot, offset 1→2→3', () => {
+  const slots = buildSlots([avail('A', 'Monday', '09:00', '11:00')], []); // 09:00, 09:30, 10:00
+  const { assignments, unassigned } = schedule(students(5), slots, 'auto', { A: 5 });
+  assertEqual(unassigned.length, 0);
+  assertDeep(
+    assignments.map((a) => `${a.student.contactSfId}→${slotLabel(a.slot)}#${a.offset}`),
+    ['S1→A/Monday/09:00#1', 'S2→A/Monday/09:00#2', 'S3→A/Monday/09:00#3',
+     'S4→A/Monday/09:30#1', 'S5→A/Monday/09:30#2']
+  );
+});
+
+test('a slot never holds more than 3 students (one per offset)', () => {
+  const { assignments } = schedule(students(30), FIXTURE_SLOTS, 'auto',
+    computeQuotas(['Coach A', 'Coach B'], { 'Coach A': 1, 'Coach B': 1 }, 30, slotCountsOf(FIXTURE_SLOTS)));
+  const perSlot = new Map();
+  assignments.forEach((a) => {
+    const key = slotLabel(a.slot);
+    if (!perSlot.has(key)) perSlot.set(key, new Set());
+    const offsets = perSlot.get(key);
+    assert(!offsets.has(a.offset), `offset ${a.offset} used twice in ${key}`);
+    offsets.add(a.offset);
+  });
+  perSlot.forEach((offsets, key) => assert(offsets.size <= 3, `${key} holds ${offsets.size} students`));
+});
+
+test('coaches are filled in coach file order', () => {
+  const quotas = computeQuotas(['Coach A', 'Coach B'], { 'Coach A': 1, 'Coach B': 0.5 }, 8, slotCountsOf(FIXTURE_SLOTS));
+  assertDeep(quotas, { 'Coach A': 5, 'Coach B': 3 });
+  const { assignments } = schedule(students(8), FIXTURE_SLOTS, 'auto', quotas);
+  assertDeep(assignments.map((a) => a.coach),
+    ['Coach A', 'Coach A', 'Coach A', 'Coach A', 'Coach A', 'Coach B', 'Coach B', 'Coach B']);
+});
+
+test('surplus students beyond total capacity are unassigned with "insufficient capacity"', () => {
+  const slotCounts = slotCountsOf(FIXTURE_SLOTS); // 5 + 5 slots → capacity 30
+  const quotas = computeQuotas(['Coach A', 'Coach B'], { 'Coach A': 1, 'Coach B': 1 }, 34, slotCounts);
+  const { assignments, unassigned } = schedule(students(34), FIXTURE_SLOTS, 'auto', quotas);
+  assertEqual(assignments.length, 30, 'capacity is 10 slots × 3');
+  assertEqual(unassigned.length, 4);
+  assert(unassigned.every((u) => u.reason === REASONS.INSUFFICIENT_CAPACITY), 'reason string is "insufficient capacity"');
+  assertEqual(REASONS.INSUFFICIENT_CAPACITY, 'insufficient capacity');
+  assertDeep(unassigned.map((u) => u.student.contactSfId), ['S31', 'S32', 'S33', 'S34']);
+});
+
+test('identical inputs produce identical output (§4.6 determinism)', () => {
+  const args = [students(8), FIXTURE_SLOTS, 'auto',
+    computeQuotas(['Coach A', 'Coach B'], { 'Coach A': 1, 'Coach B': 0.5 }, 8, slotCountsOf(FIXTURE_SLOTS))];
+  const first = schedule(...args);
+  const second = schedule(...args);
+  const shape = (r) => ({
+    assignments: r.assignments.map((a) => `${a.student.contactSfId}|${slotLabel(a.slot)}|${a.offset}`),
+    unassigned: r.unassigned.map((u) => `${u.student.contactSfId}|${u.reason}`),
+  });
+  assertDeep(shape(first), shape(second));
+});
+
+// ---- §5.2 pre-allocated mode ----
+
+group('§5.2 — pre-allocated mode');
+
+const PAIRED_STUDENTS = students(4);
+
+test('paired students are assigned to their own coach, offset 1→2→3 per slot', () => {
+  const pairings = [
+    { contactSfId: 'S1', coachName: 'Coach B' },
+    { contactSfId: 'S2', coachName: 'Coach A' },
+    { contactSfId: 'S3', coachName: 'Coach B' },
+    { contactSfId: 'S4', coachName: 'Coach A' },
+  ];
+  const { assignments, unassigned } = schedule(PAIRED_STUDENTS, FIXTURE_SLOTS, 'pre-allocated', pairings);
+  assertEqual(unassigned.length, 0);
+  const byStudent = Object.fromEntries(assignments.map((a) => [a.student.contactSfId, `${slotLabel(a.slot)}#${a.offset}`]));
+  assertDeep(byStudent, {
+    S1: 'Coach B/Tuesday/09:30#1',
+    S3: 'Coach B/Tuesday/09:30#2',
+    S2: 'Coach A/Monday/09:00#1',
+    S4: 'Coach A/Monday/09:00#2',
+  }, 'each coach fills their own first slot, in pairings-file order');
+});
+
+test('students missing from the pairings file are unassigned with "no pairing"', () => {
+  const pairings = [{ contactSfId: 'S1', coachName: 'Coach A' }];
+  const { unassigned } = schedule(students(3), FIXTURE_SLOTS, 'pre-allocated', pairings);
+  assertDeep(unassigned.map((u) => `${u.student.contactSfId}:${u.reason}`), ['S2:no pairing', 'S3:no pairing']);
+  assertEqual(REASONS.NO_PAIRING, 'no pairing');
+});
+
+test('pairings naming an unknown coach are unassigned with "coach not found"', () => {
+  const pairings = [
+    { contactSfId: 'S1', coachName: 'Coach Z' },
+    { contactSfId: 'S2', coachName: 'Coach A' },
+  ];
+  const { assignments, unassigned } = schedule(students(2), FIXTURE_SLOTS, 'pre-allocated', pairings);
+  assertDeep(unassigned.map((u) => `${u.student.contactSfId}:${u.reason}`), ['S1:coach not found']);
+  assertEqual(assignments.length, 1);
+  assertEqual(REASONS.COACH_NOT_FOUND, 'coach not found');
+});
+
+test('a coach with availability but no valid slots is found, not "coach not found"', () => {
+  const pairings = [{ contactSfId: 'S1', coachName: 'Coach C' }];
+  const { unassigned } = schedule(students(1), FIXTURE_SLOTS, 'pre-allocated', pairings, ['Coach A', 'Coach B', 'Coach C']);
+  assertDeep(unassigned.map((u) => u.reason), [REASONS.COACH_OVER_CAPACITY]);
+});
+
+test('students beyond a coach capacity are unassigned with "coach over capacity"', () => {
+  const slots = buildSlots([avail('A', 'Monday', '09:00', '10:00')], []); // 1 slot → capacity 3
+  const all = students(5);
+  const pairings = all.map((s) => ({ contactSfId: s.contactSfId, coachName: 'A' }));
+  const { assignments, unassigned } = schedule(all, slots, 'pre-allocated', pairings);
+  assertEqual(assignments.length, 3);
+  assertDeep(assignments.map((a) => a.offset), [1, 2, 3]);
+  assertDeep(unassigned.map((u) => `${u.student.contactSfId}:${u.reason}`), ['S4:coach over capacity', 'S5:coach over capacity']);
+  assertEqual(REASONS.COACH_OVER_CAPACITY, 'coach over capacity');
+});
+
+// ---- §4.2 / §7.1 expansion ----
+
+group('§4.2 — cadence and appointments');
+
+const CADENCE_QUOTAS = computeQuotas(['Coach A', 'Coach B'], { 'Coach A': 1, 'Coach B': 0.5 }, 8, slotCountsOf(FIXTURE_SLOTS));
+const CADENCE_RUN = schedule(students(8), FIXTURE_SLOTS, 'auto', CADENCE_QUOTAS);
+const APPOINTMENTS = expandToAppointments(CADENCE_RUN.assignments, START_MONDAY);
+
+test('offsets map to weeks {1,5,9,13} / {2,6,10,14} / {3,7,11,15}', () => {
+  assertDeep(weeksForOffset(1), [1, 5, 9, 13]);
+  assertDeep(weeksForOffset(2), [2, 6, 10, 14]);
+  assertDeep(weeksForOffset(3), [3, 7, 11, 15]);
+});
+
+test('no appointment falls in week 4, 8 or 12', () => {
+  const bad = APPOINTMENTS.filter((r) => [4, 8, 12].includes(r.weekNumber));
+  assertEqual(bad.length, 0, `found ${bad.length} appointments in weeks 4/8/12`);
+});
+
+test('every week number is within the 15-week term', () => {
+  assert(APPOINTMENTS.every((r) => r.weekNumber >= 1 && r.weekNumber <= 15), 'week numbers are 1–15');
+});
+
+test('every assigned student has exactly 4 appointments, numbered 1–4', () => {
+  const byStudent = new Map();
+  APPOINTMENTS.forEach((r) => {
+    if (!byStudent.has(r.contactSfId)) byStudent.set(r.contactSfId, []);
+    byStudent.get(r.contactSfId).push(r.meetingNumber);
+  });
+  assertEqual(byStudent.size, CADENCE_RUN.assignments.length, 'one group per assigned student');
+  byStudent.forEach((numbers, id) => {
+    assertDeep(numbers.slice().sort(), [1, 2, 3, 4], `student ${id} should have meetings 1–4`);
+  });
+});
+
+test('a student keeps the same coach, weekday and start time for all 4 meetings', () => {
+  const byStudent = new Map();
+  APPOINTMENTS.forEach((r) => {
+    const key = `${r.coachName}|${r.day}|${r.startTime}`;
+    if (!byStudent.has(r.contactSfId)) byStudent.set(r.contactSfId, key);
+    assertEqual(byStudent.get(r.contactSfId), key, `student ${r.contactSfId} moved slot`);
+  });
+});
+
+test('every appointment is 60 minutes with matching start/end times', () => {
+  APPOINTMENTS.forEach((r) => {
+    assertEqual(r.durationMins, 60, 'duration');
+    const [sh, sm] = r.startTime.split(':').map(Number);
+    const [eh, em] = r.endTime.split(':').map(Number);
+    assertEqual(eh * 60 + em - (sh * 60 + sm), 60, `end time of ${r.startTime}`);
+  });
+});
+
+test('dates are derived from the Monday of week 1 and land on the slot weekday', () => {
+  const row = APPOINTMENTS.find((r) => r.weekNumber === 6 && r.day === 'Wednesday');
+  if (row) {
+    // 2026-09-07 + 5 weeks + 2 days (Mon→Wed) = 2026-10-14.
+    assertEqual(row.date, '2026-10-14');
+  }
+  APPOINTMENTS.forEach((r) => {
+    assertEqual(r.dateValue.getDay(), (['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].indexOf(r.day) + 1) % 7,
+      `${r.date} should be a ${r.day}`);
+    const week1 = new Date(2026, 8, 7);
+    const days = Math.round((r.dateValue - week1) / 86400000);
+    assertEqual(days, (r.weekNumber - 1) * 7 + ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].indexOf(r.day),
+      `offset in days for week ${r.weekNumber} ${r.day}`);
+  });
+});
+
+test('a Date start value is accepted as well as an ISO string', () => {
+  const fromDate = expandToAppointments(CADENCE_RUN.assignments, new Date(2026, 8, 7));
+  assertDeep(fromDate.map((r) => r.date), APPOINTMENTS.map((r) => r.date));
+});
+
+test('rows are sorted by date, then start time, then coach name (§7.1)', () => {
+  for (let i = 1; i < APPOINTMENTS.length; i++) {
+    const a = APPOINTMENTS[i - 1];
+    const b = APPOINTMENTS[i];
+    const key = (r) => `${r.date}|${r.startTime}|${r.coachName}`;
+    assert(key(a) <= key(b), `row ${i} out of order: ${key(a)} before ${key(b)}`);
+  }
+});
+
+test('appointment rows carry the §7.1 fields, including Coach ID', () => {
+  const row = APPOINTMENTS.find((r) => r.coachName === 'Coach A');
+  ['contactSfId', 'studentName', 'coachName', 'coachId', 'meetingNumber', 'weekNumber', 'date', 'dateValue', 'day', 'startTime', 'endTime', 'durationMins']
+    .forEach((field) => assert(field in row, `missing field "${field}"`));
+  assertEqual(row.coachId, 'C-A');
+  assertEqual(APPOINTMENTS.find((r) => r.coachName === 'Coach B').coachId, '', 'blank when not supplied');
+});
+
+// ---- §9 invariants over a full run ----
+
+group('§9 — invariants over a full run');
+
+const FULL_QUOTAS = computeQuotas(['Coach A', 'Coach B'], { 'Coach A': 1, 'Coach B': 0.5 }, 30, slotCountsOf(FIXTURE_SLOTS));
+const FULL_RUN = schedule(students(30), FIXTURE_SLOTS, 'auto', FULL_QUOTAS);
+const FULL_APPOINTMENTS = expandToAppointments(FULL_RUN.assignments, START_MONDAY);
+
+test('the full run fills capacity: 30 students × 4 meetings = 120 appointments', () => {
+  assertEqual(FULL_RUN.assignments.length, 30);
+  assertEqual(FULL_RUN.unassigned.length, 0);
+  assertEqual(FULL_APPOINTMENTS.length, 120);
+});
+
+test('no appointment in weeks 4, 8 or 12', () => {
+  assertEqual(FULL_APPOINTMENTS.filter((r) => [4, 8, 12].includes(r.weekNumber)).length, 0);
+});
+
+test('exactly 4 appointments per assigned student', () => {
+  const counts = new Map();
+  FULL_APPOINTMENTS.forEach((r) => counts.set(r.contactSfId, (counts.get(r.contactSfId) || 0) + 1));
+  assertEqual(counts.size, 30);
+  counts.forEach((count, id) => assertEqual(count, 4, `student ${id}`));
+});
+
+test('no coach is double-booked (same coach, same date, same start time)', () => {
+  const seen = new Set();
+  FULL_APPOINTMENTS.forEach((r) => {
+    const key = `${r.coachName}|${r.date}|${r.startTime}`;
+    assert(!seen.has(key), `double-booked: ${key}`);
+    seen.add(key);
+  });
+});
+
+test('no student is double-booked either', () => {
+  const seen = new Set();
+  FULL_APPOINTMENTS.forEach((r) => {
+    const key = `${r.contactSfId}|${r.date}|${r.startTime}`;
+    assert(!seen.has(key), `student double-booked: ${key}`);
+    seen.add(key);
+  });
+});
+
+test('no appointment overlaps a class block', () => {
+  FULL_APPOINTMENTS.forEach((r) => {
+    const start = t(r.startTime);
+    const end = t(r.endTime);
+    FIXTURE_CLASSES.forEach((block) => {
+      const clash = block.day === r.day && block.start < end && start < block.end;
+      assert(!clash, `${r.day} ${r.startTime}–${r.endTime} clashes with a class block`);
+    });
+  });
+});
+
+test('every appointment sits inside one of its coach availability blocks', () => {
+  FULL_APPOINTMENTS.forEach((r) => {
+    const start = t(r.startTime);
+    const end = t(r.endTime);
+    const inside = FIXTURE_AVAILABILITY.some(
+      (b) => b.coachName === r.coachName && b.day === r.day && b.start <= start && end <= b.end
+    );
+    assert(inside, `${r.coachName} ${r.day} ${r.startTime} is outside their availability`);
+  });
+});
+
+test('pre-allocated mode satisfies the same invariants', () => {
+  const all = students(20);
+  const pairings = all.map((s, i) => ({ contactSfId: s.contactSfId, coachName: i % 2 === 0 ? 'Coach A' : 'Coach B' }));
+  const run = schedule(all, FIXTURE_SLOTS, 'pre-allocated', pairings);
+  const rows = expandToAppointments(run.assignments, START_MONDAY);
+  assertEqual(run.assignments.length, 20);
+  assertEqual(rows.length, 80);
+  assertEqual(rows.filter((r) => [4, 8, 12].includes(r.weekNumber)).length, 0);
+  const seen = new Set();
+  rows.forEach((r) => {
+    const key = `${r.coachName}|${r.date}|${r.startTime}`;
+    assert(!seen.has(key), `double-booked: ${key}`);
+    seen.add(key);
+    FIXTURE_CLASSES.forEach((block) => {
+      assert(!(block.day === r.day && block.start < t(r.endTime) && t(r.startTime) < block.end), 'class clash');
+    });
+  });
+});
+
+// ---- render ----
+
+const list = document.getElementById('results');
+const summary = document.getElementById('summary');
+let lastGroup = null;
+let passed = 0;
+
+results.forEach((result) => {
+  if (result.group !== lastGroup) {
+    lastGroup = result.group;
+    const heading = document.createElement('li');
+    heading.className = 'test-group';
+    heading.textContent = result.group;
+    list.appendChild(heading);
+  }
+  if (result.ok) passed += 1;
+  const item = document.createElement('li');
+  item.className = result.ok ? 'pass' : 'fail';
+  const badge = document.createElement('span');
+  badge.className = 'badge';
+  badge.textContent = result.ok ? 'PASS' : 'FAIL';
+  item.appendChild(badge);
+  item.appendChild(document.createTextNode(result.name));
+  if (!result.ok) {
+    const detail = document.createElement('span');
+    detail.className = 'detail';
+    detail.textContent = result.detail;
+    item.appendChild(detail);
+  }
+  list.appendChild(item);
+});
+
+const failed = results.length - passed;
+summary.className = `test-summary ${failed === 0 ? 'pass' : 'fail'}`;
+summary.textContent = failed === 0
+  ? `All ${results.length} tests passed.`
+  : `${failed} of ${results.length} tests failed.`;
+document.title = `${failed === 0 ? 'PASS' : 'FAIL'} — Scheduler tests`;
+</script>
+</body>
+</html>
