@@ -1,6 +1,6 @@
 # Coaching Meeting Scheduler — Technical Specification
 
-Version 1.1 — 12 August 2026 (adds §11 Blocked weeks/dates)
+Version 1.2 — 12 August 2026 (adds §6.1 Campus + reworks §7.1 export columns; §11 Blocked weeks/dates from v1.1)
 
 ## 1. Purpose
 
@@ -10,7 +10,7 @@ A browser-based tool that allocates recurring 1-hour coaching meetings to studen
 
 - **Stack:** plain HTML + CSS + vanilla JavaScript (ES modules). No framework, no build step, no npm. This is deliberate: the repo deploys to GitHub Pages by pushing files, with nothing to compile.
 - **Excel I/O:** SheetJS (`xlsx`) loaded from CDN (`https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js`). Used for both parsing uploads and generating the export.
-- **Persistence:** `localStorage` only, for settings (start date, mode, FTE values, custom export mapping). Uploaded data is held in memory for the session and never persisted.
+- **Persistence:** `localStorage` only, for settings (start date, campus, mode, FTE values, custom export mapping). Uploaded data is held in memory for the session and never persisted.
 - **Hosting:** GitHub Pages, deploy-from-branch (`main`, root). No Actions workflow required.
 
 ### Repo structure
@@ -24,6 +24,7 @@ A browser-based tool that allocates recurring 1-hour coaching meetings to studen
 │   ├── parse.js        # Excel parsing + validation for the 4 file types
 │   ├── scheduler.js    # Pure scheduling engine (no DOM access)
 │   ├── exporter.js     # Default + custom-mapped Excel export
+│   ├── timezone.js     # Campus → IANA zone, offset-bearing ISO formatting
 │   └── storage.js      # localStorage read/write helpers
 ├── templates/          # The 4 .xlsx templates, downloadable from the UI
 ├── tests.html          # Loads scheduler.js and runs assertions in-browser
@@ -34,7 +35,7 @@ A browser-based tool that allocates recurring 1-hour coaching meetings to studen
 
 ## 3. Input files
 
-All four templates live in `/templates` and are downloadable from the UI. Parsers must accept times as either text (`HH:MM`, 24-hour) or native Excel time values, and must trim whitespace and ignore fully blank rows. Header row is row 1; the templates contain a legend and one example row — parsers must ignore any row whose first cell begins with `#` (legend/comment rows).
+All four templates live in `/templates` and are downloadable from the UI. Every column that feeds an export column (§7.1) is a hard requirement: a missing column rejects the file, and a blank or malformed cell is a row error. All times in every uploaded file are wall-clock times at the run's campus (§6.1). Parsers must accept times as either text (`HH:MM`, 24-hour) or native Excel time values, and must trim whitespace and ignore fully blank rows. Header row is row 1; the templates contain a legend and one example row — parsers must ignore any row whose first cell begins with `#` (legend/comment rows).
 
 ### 3.1 Class schedule (`class_schedule_template.xlsx`)
 
@@ -54,7 +55,8 @@ One row per weekly availability block per coach.
 | Column | Required | Notes |
 |---|---|---|
 | Coach Name | Yes | Exact string used as the coach key throughout |
-| Coach ID | No | Carried through to export if present |
+| Coach SF ID | Yes | Exported; must be identical on every row for a coach |
+| Coach Email | Yes | Exported; must be identical on every row for a coach |
 | Day | Yes | As above |
 | Start Time | Yes | |
 | End Time | Yes | |
@@ -65,6 +67,7 @@ One row per weekly availability block per coach.
 |---|---|---|
 | Contact SF ID | Yes | Unique; duplicates are a validation error |
 | Student Name | Yes | |
+| Student Email | Yes | Must be a plausible address (`name@example.com`) |
 
 ### 3.4 Pairings (`pairings_template.xlsx`) — only in pre-allocated mode
 
@@ -108,7 +111,7 @@ A toggle selects one of two modes.
 
 A single page with a stepper:
 
-1. **Setup** — start date picker (with Monday normalisation notice), mode toggle, template download links.
+1. **Setup** — start date picker (with Monday normalisation notice), campus selector (§6.1), mode toggle, template download links.
 2. **Upload** — drag-and-drop or file pickers for the 3 (or 4) files, with per-file validation results shown immediately (row counts, errors with row numbers).
 3. **Review** — FTE editor (auto mode only); a capacity summary table (coach, valid slots, capacity, FTE, quota); warnings.
 4. **Results** — summary (students scheduled / unassigned, per-coach utilisation), an unassigned-students table with reasons, a preview of the first 50 appointment rows, and the **Export** button.
@@ -116,33 +119,58 @@ A single page with a stepper:
 
 All errors must be human-readable and name the file, row, and problem. The app must never fail silently.
 
+### 6.1 Campus (one location per run)
+
+A run covers exactly one location. The Setup step offers a campus selector — **London** (`Europe/London`), **Boston** (`America/New_York`), **Dubai** (`Asia/Dubai`) — defaulting to London and persisted to localStorage. Uploaded times are naive wall-clock times at that campus, so the scheduling engine keeps working in minutes-since-midnight exactly as before; the campus zone is applied only when building the export instants (§7.1).
+
+This is what makes a single class timetable safe to compare against every coach's availability: one campus per run means one zone, so naive minute arithmetic is never comparing times from two different zones.
+
 ## 7. Export
 
 ### 7.1 Default columns (one row per appointment; 4 rows per scheduled student)
 
-| Column | Example |
-|---|---|
-| Contact SF ID | 0031t00000AbCdE |
-| Student Name | Jane Doe |
-| Coach Name | A. Coach |
-| Coach ID | (blank if not supplied) |
-| Meeting Number | 1–4 |
-| Week Number | 1–15 |
-| Date | 2026-09-07 (ISO, also stored as a real Excel date) |
-| Day | Monday |
-| Start Time | 10:00 |
-| End Time | 11:00 |
-| Duration (mins) | 60 |
+| Column | Source | Example |
+|---|---|---|
+| Student Name | student list | Jane Doe |
+| Contact SF ID (Student) | student list | 0031t00000AbCdE |
+| Student Email | student list | jane.doe@example.com |
+| Service Name | derived | `Coaching 1 - Meeting N`, N = 1–4 |
+| Coach Name | availability | A. Coach |
+| Coach SF ID | availability | 005XX000001 |
+| Coach Email | availability | a.coach@example.com |
+| Meeting Start Date & Time | derived | 2026-09-16T12:00:00+01:00 |
+| Meeting End Date & Time | derived | 2026-09-16T13:00:00+01:00 |
+| Meeting Status | constant | `Scheduled` |
+
+**Date/time format (normative).** ISO 8601 with an explicit UTC offset:
+`YYYY-MM-DDTHH:MM:SS±HH:MM`. The offset is that of the run's campus (§6.1) **at
+that appointment's instant**, obtained from `Intl`, never from a hard-coded
+table. A 15-week term starting in September spans both the UK and US DST
+transitions, so appointments in one student's series legitimately differ:
+London `+01:00` → `+00:00`, Boston `-04:00` → `-05:00`, Dubai `+04:00`
+throughout. The end is the start plus 60 minutes **in absolute time**, so a
+meeting spanning a transition carries different start and end offsets.
+
+Both columns are written as **text cells**, not Excel date serials: a serial
+carries no zone, so storing one would discard the offset and let Excel
+re-render the instant in the reader's local settings.
+
+The v1.1 fields (Meeting Number, Week Number, Date, Day, Start Time, End Time,
+Duration (mins)) remain available in the §7.2 mapping editor but are excluded
+by default.
 
 Rows sorted by Date, then Start Time, then Coach Name. Filename: `appointments_YYYY-MM-DD_HHMM.xlsx` (generation timestamp).
 
 ### 7.2 Customisable export mapping
 
-An editor listing the default fields, allowing the user to: rename a column header, reorder columns, exclude columns, and add **constant columns** (fixed header + fixed value on every row — e.g. `Record Type = Coaching`). The mapping is saved to localStorage and applied on export. A "Reset to defaults" button restores §7.1. This exists so the output can later be shaped to match a batch-upload template.
+An editor listing the default fields, allowing the user to: rename a column header, reorder columns, exclude columns, and add **constant columns** (fixed header + fixed value on every row — e.g. `Record Type = Coaching`). The mapping is saved to localStorage and applied on export. A "Reset to defaults" button restores §7.1. The mapping is stored under a versioned key (`coachScheduler.exportMapping.v2`); a mapping saved against an older default column set is ignored rather than partially restored, so a returning user gets the current defaults. This exists so the output can later be shaped to match a batch-upload template.
 
 ## 8. Validation rules (parse stage)
 
 - Missing required column → file rejected, message names the column.
+- Blank value in any required column → row error naming the column.
+- Malformed email → row error quoting the value.
+- One coach with conflicting Coach SF ID / Coach Email across their rows → error naming both rows.
 - Unparseable time / End ≤ Start → row error with row number.
 - Unknown day name → row error.
 - Duplicate Contact SF ID → error listing the duplicates.
@@ -156,12 +184,12 @@ Pure functions, no DOM, so `tests.html` can exercise them:
 - `buildSlots(availability, classBlocks)` → `[{coach, day, start, end}]`
 - `computeQuotas(coaches, fte, studentCount, slotCounts)` → `{coachName: quota}`
 - `schedule(students, slots, mode, quotasOrPairings)` → `{assignments: [{student, coach, slot, offset}], unassigned: [{student, reason}]}`
-- `expandToAppointments(assignments, startMonday)` → appointment rows per §7.1
+- `expandToAppointments(assignments, startMonday, timeZone)` → appointment rows per §7.1
 - Invariant assertions in tests: no appointment in weeks 4/8/12; exactly 4 appointments per assigned student; no coach double-booked (same coach, same slot, same week); no appointment overlaps a class block.
 
 ## 10. Out of scope (v1)
 
-Multiple cohorts/timetables per run (planned later); student-specific availability; timezone handling (all times are local and naive); public holidays; editing individual appointments after generation; moving a displaced meeting to a different coach.
+Multiple cohorts/timetables per run (planned later); student-specific availability; more than one campus per run (§6.1 fixes one location per run; cross-campus scheduling would require per-block zones and absolute-time clash detection); public holidays; editing individual appointments after generation; moving a displaced meeting to a different coach.
 
 ## 11. Blocked weeks/dates (v1.1 — implemented in Session 7; Session 6's audit excludes this section)
 

@@ -34,8 +34,11 @@ import {
   expandToAppointments,
   weeksForOffset,
   minutesToTime,
+  serviceNameFor,
+  MEETING_STATUS,
   REASONS,
 } from './js/scheduler.js';
+import { formatIsoWithOffset, wallClockToInstant, campusOrDefault, CAMPUSES } from './js/timezone.js';
 
 // ---- tiny assertion harness ----
 
@@ -76,10 +79,19 @@ const t = (hhmm) => {
   return h * 60 + m;
 };
 
-const avail = (coachName, day, start, end, coachId = '') => ({ coachName, coachId, day, start: t(start), end: t(end) });
+const avail = (coachName, day, start, end, coachSfId = '', coachEmail = '') => ({
+  coachName, coachSfId, coachEmail, day, start: t(start), end: t(end),
+});
 const cls = (day, start, end, className = 'Class') => ({ day, start: t(start), end: t(end), className });
 const students = (n, prefix = 'S') =>
-  Array.from({ length: n }, (_, i) => ({ contactSfId: `${prefix}${i + 1}`, studentName: `${prefix}tudent ${i + 1}` }));
+  Array.from({ length: n }, (_, i) => ({
+    contactSfId: `${prefix}${i + 1}`,
+    studentName: `${prefix}tudent ${i + 1}`,
+    studentEmail: `${prefix.toLowerCase()}${i + 1}@example.com`,
+  }));
+
+const LONDON = 'Europe/London';
+const isoAt = (y, m, d, hhmm, tz) => formatIsoWithOffset(wallClockToInstant(y, m, d, t(hhmm), tz), tz);
 
 const slotLabel = (s) => `${s.coach}/${s.day}/${minutesToTime(s.start)}`;
 
@@ -89,8 +101,8 @@ const slotLabel = (s) => `${s.coach}/${s.day}/${minutesToTime(s.start)}`;
 // Coach B: Tue 09:30–12:30, no classes → 09:30, 10:00, 10:30, 11:00, 11:30
 const FIXTURE_CLASSES = [cls('Monday', '10:00', '11:00', 'Maths'), cls('Wednesday', '09:00', '10:00', 'Physics')];
 const FIXTURE_AVAILABILITY = [
-  avail('Coach A', 'Monday', '09:00', '12:00', 'C-A'),
-  avail('Coach A', 'Wednesday', '09:00', '12:00', 'C-A'),
+  avail('Coach A', 'Monday', '09:00', '12:00', 'C-A', 'a@example.com'),
+  avail('Coach A', 'Wednesday', '09:00', '12:00', 'C-A', 'a@example.com'),
   avail('Coach B', 'Tuesday', '09:30', '12:30'),
 ];
 const FIXTURE_SLOTS = buildSlots(FIXTURE_AVAILABILITY, FIXTURE_CLASSES);
@@ -150,8 +162,8 @@ test('overlapping availability rows do not produce duplicate slots', () => {
 });
 
 test('Coach ID from the availability file is carried onto slots', () => {
-  assertEqual(FIXTURE_SLOTS.find((s) => s.coach === 'Coach A').coachId, 'C-A');
-  assertEqual(FIXTURE_SLOTS.find((s) => s.coach === 'Coach B').coachId, '');
+  assertEqual(FIXTURE_SLOTS.find((s) => s.coach === 'Coach A').coachSfId, 'C-A');
+  assertEqual(FIXTURE_SLOTS.find((s) => s.coach === 'Coach B').coachSfId, '');
 });
 
 test('fixture builds the expected slots for both coaches', () => {
@@ -420,12 +432,86 @@ test('rows are sorted by date, then start time, then coach name (§7.1)', () => 
   }
 });
 
-test('appointment rows carry the §7.1 fields, including Coach ID', () => {
+test('appointment rows carry every §7.1 export field', () => {
   const row = APPOINTMENTS.find((r) => r.coachName === 'Coach A');
-  ['contactSfId', 'studentName', 'coachName', 'coachId', 'meetingNumber', 'weekNumber', 'date', 'dateValue', 'day', 'startTime', 'endTime', 'durationMins']
+  ['studentName', 'contactSfId', 'studentEmail', 'serviceName', 'coachName', 'coachSfId', 'coachEmail',
+   'startDateTime', 'endDateTime', 'meetingStatus']
     .forEach((field) => assert(field in row, `missing field "${field}"`));
-  assertEqual(row.coachId, 'C-A');
-  assertEqual(APPOINTMENTS.find((r) => r.coachName === 'Coach B').coachId, '', 'blank when not supplied');
+  assertEqual(row.coachSfId, 'C-A');
+  assertEqual(row.coachEmail, 'a@example.com');
+});
+
+test('Service Name is "Coaching 1 - Meeting N" for N = 1..4 (§7.1)', () => {
+  assertEqual(serviceNameFor(1), 'Coaching 1 - Meeting 1');
+  assertEqual(serviceNameFor(4), 'Coaching 1 - Meeting 4');
+  APPOINTMENTS.forEach((r) => assertEqual(r.serviceName, `Coaching 1 - Meeting ${r.meetingNumber}`));
+});
+
+test('Meeting Status is always "Scheduled" (§7.1)', () => {
+  assertEqual(MEETING_STATUS, 'Scheduled');
+  assert(APPOINTMENTS.every((r) => r.meetingStatus === 'Scheduled'), 'every row is Scheduled');
+});
+
+// ---- §7.1 campus timezones ----
+
+group('§7.1 — campus time zones');
+
+test('the three campuses map to IANA zones', () => {
+  assertDeep(CAMPUSES.map((c) => `${c.label}=${c.timeZone}`),
+    ['London=Europe/London', 'Boston=America/New_York', 'Dubai=Asia/Dubai']);
+});
+
+test('an unknown or missing campus id falls back to London', () => {
+  assertEqual(campusOrDefault('atlantis').id, 'london');
+  assertEqual(campusOrDefault(null).id, 'london');
+});
+
+test('summer offsets match the required examples (§7.1)', () => {
+  assertEqual(isoAt(2026, 9, 16, '12:00', 'Europe/London'), '2026-09-16T12:00:00+01:00');
+  assertEqual(isoAt(2026, 9, 16, '07:00', 'America/New_York'), '2026-09-16T07:00:00-04:00');
+  assertEqual(isoAt(2026, 9, 16, '07:00', 'Asia/Dubai'), '2026-09-16T07:00:00+04:00');
+});
+
+test('offsets change by themselves after each DST transition', () => {
+  // The UK leaves BST on 25 Oct 2026, the US leaves EDT on 1 Nov 2026 —
+  // both inside a term that starts in September, so a fixed offset would be
+  // wrong for the back half of the term.
+  assertEqual(isoAt(2026, 11, 4, '12:00', 'Europe/London'), '2026-11-04T12:00:00+00:00');
+  assertEqual(isoAt(2026, 11, 4, '07:00', 'America/New_York'), '2026-11-04T07:00:00-05:00');
+  assertEqual(isoAt(2026, 11, 4, '07:00', 'Asia/Dubai'), '2026-11-04T07:00:00+04:00', 'Dubai never shifts');
+});
+
+test('every exported datetime matches the ISO 8601 + offset format', () => {
+  const pattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$/;
+  APPOINTMENTS.forEach((r) => {
+    assert(pattern.test(r.startDateTime), `bad start format: ${r.startDateTime}`);
+    assert(pattern.test(r.endDateTime), `bad end format: ${r.endDateTime}`);
+  });
+});
+
+test('the end datetime is exactly 60 minutes after the start, in absolute time', () => {
+  APPOINTMENTS.forEach((r) => {
+    const gap = Date.parse(r.endDateTime) - Date.parse(r.startDateTime);
+    assertEqual(gap, 60 * 60 * 1000, `${r.startDateTime} → ${r.endDateTime}`);
+  });
+});
+
+test('the exported wall clock matches the naive slot time in every campus', () => {
+  CAMPUSES.forEach((campus) => {
+    expandToAppointments(CADENCE_RUN.assignments, START_MONDAY, campus.timeZone).forEach((r) => {
+      assertEqual(r.startDateTime.slice(0, 19), `${r.date}T${r.startTime}:00`,
+        `${campus.label}: wall clock drifted from the scheduled slot`);
+      assertEqual(r.endDateTime.slice(11, 16), r.endTime, `${campus.label}: end wall clock drifted`);
+    });
+  });
+});
+
+test('a meeting spanning the clocks-go-back hour keeps a true 60 minutes', () => {
+  // 01:30 on 25 Oct 2026 exists twice in London; the run resolves to the
+  // first (BST) occurrence, so the hour that follows ends at 01:30 GMT.
+  const start = wallClockToInstant(2026, 10, 25, t('01:30'), LONDON);
+  assertEqual(formatIsoWithOffset(start, LONDON), '2026-10-25T01:30:00+01:00');
+  assertEqual(formatIsoWithOffset(start + 60 * 60 * 1000, LONDON), '2026-10-25T01:30:00+00:00');
 });
 
 // ---- §9 invariants over a full run ----

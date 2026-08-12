@@ -9,28 +9,46 @@
 
 import { getXLSX } from './xlsx-loader.js';
 
-/** Human labels for the §7.1 appointment fields, shown in the mapping editor. */
-export const FIELD_LABELS = {
-  contactSfId: 'Contact SF ID',
-  studentName: 'Student Name',
-  coachName: 'Coach Name',
-  coachId: 'Coach ID',
-  meetingNumber: 'Meeting Number',
-  weekNumber: 'Week Number',
-  date: 'Date',
-  day: 'Day',
-  startTime: 'Start Time',
-  endTime: 'End Time',
-  durationMins: 'Duration (mins)',
-};
+/**
+ * The §7.1 default columns, in export order. Everything here is included by
+ * default; the fields below this list are still selectable in the mapping
+ * editor but start excluded.
+ */
+const DEFAULT_FIELDS = [
+  ['studentName', 'Student Name'],
+  ['contactSfId', 'Contact SF ID (Student)'],
+  ['studentEmail', 'Student Email'],
+  ['serviceName', 'Service Name'],
+  ['coachName', 'Coach Name'],
+  ['coachSfId', 'Coach SF ID'],
+  ['coachEmail', 'Coach Email'],
+  ['startDateTime', 'Meeting Start Date & Time'],
+  ['endDateTime', 'Meeting End Date & Time'],
+  ['meetingStatus', 'Meeting Status'],
+];
 
-const DEFAULT_MAPPING = Object.keys(FIELD_LABELS).map((field) => ({
-  id: field,
-  type: 'field',
-  field,
-  header: FIELD_LABELS[field],
-  included: true,
-}));
+/**
+ * Fields the schedule still carries but which the default export no longer
+ * needs. Kept selectable so §7.2 customisation loses no capability — the
+ * naive date/time columns in particular remain useful for eyeballing a run.
+ */
+const OPTIONAL_FIELDS = [
+  ['meetingNumber', 'Meeting Number'],
+  ['weekNumber', 'Week Number'],
+  ['date', 'Date'],
+  ['day', 'Day'],
+  ['startTime', 'Start Time'],
+  ['endTime', 'End Time'],
+  ['durationMins', 'Duration (mins)'],
+];
+
+/** Human labels for the appointment fields, shown in the mapping editor. */
+export const FIELD_LABELS = Object.fromEntries([...DEFAULT_FIELDS, ...OPTIONAL_FIELDS]);
+
+const DEFAULT_MAPPING = [
+  ...DEFAULT_FIELDS.map(([field, header]) => ({ id: field, type: 'field', field, header, included: true })),
+  ...OPTIONAL_FIELDS.map(([field, header]) => ({ id: field, type: 'field', field, header, included: false })),
+];
 
 const NUMERIC_FIELDS = new Set(['meetingNumber', 'weekNumber', 'durationMins']);
 
@@ -122,10 +140,19 @@ export function buildPreviewRows(appointments, mapping, limit = 50) {
   return { columns, rows };
 }
 
+/** Columns whose value is an offset-bearing ISO string, written as text. */
+const DATETIME_FIELDS = new Set(['startDateTime', 'endDateTime']);
+
 /**
- * Builds the workbook rows for export: the Date column carries a real JS
- * Date (so SheetJS writes a true Excel date) plus an explicit `yyyy-mm-dd`
- * number format, per SPEC.md §7.1 ("also stored as a real Excel date").
+ * Builds the workbook rows for export.
+ *
+ * The Meeting Start/End Date & Time columns are written as **text**, not as
+ * Excel date values. This is deliberate: an Excel date serial is a bare
+ * number with no timezone, so storing one would silently discard the
+ * `+01:00` / `-04:00` offset that SPEC.md §7.1 requires — and Excel would
+ * then re-render the instant in whoever's local settings opened the file.
+ * The optional legacy Date column keeps its real-Excel-date behaviour, since
+ * a naive calendar day has no offset to lose.
  */
 function buildWorkbookAoa(appointments, columns) {
   const header = columns.map((col) => col.header);
@@ -169,6 +196,20 @@ export function exportAppointments(appointments, mapping) {
       if (cell) cell.z = 'yyyy-mm-dd';
     }
   }
+
+  // Pin the ISO datetime columns to text cells. SheetJS already infers 's'
+  // for a string, but stating it here means a future change to the value
+  // shape cannot quietly turn these into numbers and lose the offset.
+  columns.forEach((col, c) => {
+    if (col.type !== 'field' || !DATETIME_FIELDS.has(col.field)) return;
+    for (let r = 1; r < aoa.length; r++) {
+      const cell = worksheet[XLSX.utils.encode_cell({ r, c })];
+      if (cell) {
+        cell.t = 's';
+        delete cell.z;
+      }
+    }
+  });
 
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, worksheet, 'Appointments');

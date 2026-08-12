@@ -120,7 +120,8 @@ Monday and one on Thursday gets three rows.
 | Column | Required? | What goes in it |
 |---|---|---|
 | Coach Name | Yes | Spell it **identically** on every row and in the pairings file — this name is how the tool recognises the coach. `A. Coach` and `A Coach` are two different people as far as the tool is concerned. |
-| Coach ID | No | Any reference of your own. It is copied straight into the export. |
+| Coach SF ID | Yes | The coach's Salesforce ID. It goes into the export, so it must be the same on every row for that coach. |
+| Coach Email | Yes | The coach's email address. Also exported, and also must match on every row for that coach. |
 | Day | Yes | As above. |
 | Start Time | Yes | Start of the window the coach is free, e.g. `13:00`. |
 | End Time | Yes | End of that window. |
@@ -131,6 +132,7 @@ Monday and one on Thursday gets three rows.
 |---|---|---|
 | Contact SF ID | Yes | The Salesforce contact ID. Must be unique — the same ID twice is an error. |
 | Student Name | Yes | The student's name, used in the export and in the on-screen tables. |
+| Student Email | Yes | The student's email address. It is exported, so it has to look like a real address. |
 
 The order of this file matters a little: when there are not enough places for
 everybody, students nearer the top are scheduled first.
@@ -157,6 +159,11 @@ and forth between them freely; nothing is lost.
 run Monday to Sunday, so if you pick a Wednesday the tool moves it back and
 tells you: *"Week 1 will start Monday 7 September (moved from your selected
 date)."* That is not an error — it is the tool being explicit.
+
+**Choose the campus.** London, Boston, or Dubai. One run covers one campus.
+Every time you type into the availability and class timetable files is read as
+local time at that campus, and the exported meeting times carry that campus's
+UTC offset. The note under the picker spells out which offset you will get.
 
 **Choose a mode.** Auto-assign or pre-allocated — see [section 5](#5-the-two-modes).
 
@@ -212,17 +219,42 @@ coach:
 
 | Column | Example |
 |---|---|
-| Contact SF ID | 0031t00000AbCdE |
 | Student Name | Jane Doe |
+| Contact SF ID (Student) | 0031t00000AbCdE |
+| Student Email | jane.doe@example.com |
+| Service Name | Coaching 1 - Meeting 1 |
 | Coach Name | A. Coach |
-| Coach ID | (blank if you did not supply one) |
-| Meeting Number | 1 to 4 |
-| Week Number | 1 to 15 |
-| Date | 2026-09-07 (a real date, so Excel can sort and filter it) |
-| Day | Monday |
-| Start Time | 10:00 |
-| End Time | 11:00 |
-| Duration (mins) | 60 |
+| Coach SF ID | 005XX000001 |
+| Coach Email | a.coach@example.com |
+| Meeting Start Date & Time | 2026-09-16T12:00:00+01:00 |
+| Meeting End Date & Time | 2026-09-16T13:00:00+01:00 |
+| Meeting Status | Scheduled |
+
+**Service Name** counts the meeting: a student's four appointments are
+`Coaching 1 - Meeting 1` through `Coaching 1 - Meeting 4`. **Meeting Status**
+is always `Scheduled`.
+
+### About the meeting times
+
+Both date/time columns are written in ISO 8601 with the campus's UTC offset,
+e.g. `2026-09-16T12:00:00+01:00` for London, `2026-09-16T07:00:00-04:00` for
+Boston, `2026-09-16T07:00:00+04:00` for Dubai.
+
+The offset is worked out **per appointment**, not fixed per campus, because
+the clocks change during a 15-week term: the UK leaves BST at the end of
+October and the US leaves EDT at the start of November. So a student meeting
+at 12:00 in London gets `+01:00` for their earlier meetings and `+00:00` for
+their later ones. That is correct — the meeting is still at 12:00 local time
+in both cases. Dubai does not observe daylight saving, so it is always
+`+04:00`.
+
+These two columns are stored as **text**, not as Excel dates. An Excel date
+cannot carry a time zone, so storing one would throw the offset away and let
+Excel re-display the time in whatever zone the reader's computer is set to.
+
+The older columns — Meeting Number, Week Number, Date, Day, Start Time, End
+Time, Duration — are still available in **Export settings** if you want them;
+they are just switched off by default.
 
 ---
 
@@ -336,6 +368,8 @@ data — the numbers match what Excel shows you down the left-hand side.
 | **Missing Coach Name value.** | A row in the availability or pairings file has no coach on it. | Add the name, or delete the row. Every availability row needs its coach, even repeat rows for the same person. |
 | **Missing Contact SF ID value.** | A student or pairings row has no ID. | Add it. The ID, not the name, is how students are matched between files. |
 | **Missing Student Name value.** | A student row has an ID but no name. | Add the name. |
+| **"jane doe" is not a valid Student Email — expected an address like name@example.com.** | An email cell holds something that is not an address. | Correct it. Every export column is required, so the row is skipped until you do. |
+| **Coach "A. Coach" has two different Coach Email values: … (row 4) and … (row 9).** | The same coach is listed with conflicting details on different availability rows. | Make them identical. The tool will not guess which one belongs in the export. |
 | **Duplicate Contact SF ID "0031t…" appears in rows 5, 9.** | The same student appears more than once in the student list. | Delete the extra rows. All copies are ignored until you do, so the student will not be scheduled. |
 | **The workbook has no sheets.** / **Sheet "…" could not be read.** | The file opened but there is nothing inside it. | Re-save it from Excel with your data on the first sheet. The tool always reads the first sheet. |
 
@@ -384,8 +418,8 @@ and having their meetings automatically moved elsewhere in the same block — is
 specified but not built yet.
 
 Also out of scope: more than one class timetable per run, per-student
-availability, time zones, public holidays, and editing individual appointments
-after they are generated.
+availability, more than one campus per run, public holidays, and editing
+individual appointments after they are generated.
 
 ---
 
