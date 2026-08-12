@@ -1,10 +1,12 @@
 # Coaching Meeting Scheduler — Technical Specification
 
-Version 1.2 — 12 August 2026 (adds §6.1 Campus + reworks §7.1 export columns; §11 Blocked weeks/dates from v1.1)
+Version 1.3 — 12 August 2026 (adds §3.1/§4.4a/§5.3/§12 multiple class blocks; §6.1 Campus and §7.1 export columns from v1.2; §11 Blocked weeks/dates from v1.1)
 
 ## 1. Purpose
 
-A browser-based tool that allocates recurring 1-hour coaching meetings to students and coaches for a 15-week term. It reads Excel uploads (class timetable, coach availability, student list, optional student–coach pairings), computes a clash-free schedule under fixed cadence rules, and exports one Excel row per appointment. No server. No data leaves the browser. Hosted on GitHub Pages.
+A browser-based tool that allocates recurring 1-hour coaching meetings to students and coaches for a 15-week term. It reads Excel uploads (class timetables, coach availability, student list, optional student–coach pairings), computes a clash-free schedule under fixed cadence rules, and exports one Excel row per appointment. No server. No data leaves the browser. Hosted on GitHub Pages.
+
+A run may contain **several class blocks** — distinct student cohorts, each with its own class timetable. Coaching availability is coach-specific and spans the whole run; class clashes are per student, judged against their own class block only (§4.4a).
 
 ## 2. Architecture
 
@@ -39,14 +41,21 @@ All four templates live in `/templates` and are downloadable from the UI. Every 
 
 ### 3.1 Class schedule (`class_schedule_template.xlsx`)
 
-One shared timetable for all students in a run. One row per weekly class block.
+Every class timetable in the run, in one file. One row per class; the **Class Block** column says which cohort's timetable that class belongs to. A run may contain any number of class blocks.
+
+Terminology: a **class block** is a cohort's class timetable. It is unrelated to the four **term blocks** of weeks in §4.2/§11.1, which keep that name.
 
 | Column | Required | Notes |
 |---|---|---|
+| Class Block | Yes | The cohort this class belongs to, e.g. `Block A`. Matched case-insensitively after trimming, so `Block A`, `block a` and ` Block A ` are one cohort. Exactly one name per cell |
 | Day | Yes | Monday–Sunday (case-insensitive; accept 3-letter abbreviations) |
 | Start Time | Yes | e.g. `09:00` |
 | End Time | Yes | Must be after Start Time |
 | Class Name | No | Label only |
+
+**The 15-hour rule (normative).** Each class block must total **exactly 15 hours** of class — the sum of every class row in that block across the whole timetable, *not* 15 hours per week. A block totalling anything else is a validation error naming the block and the total it actually came to (§8). Two classes of the same block may not overlap each other (they would count the same hour twice); the same clock hour in two *different* blocks is normal and expected.
+
+A file whose rows carry no Class Block value is not accepted (the column is required). The engine itself still treats an unnamed set of class rows as one implicit block, which is what makes its own fixtures and any legacy caller behave exactly as the pre-v1.3 single timetable did.
 
 ### 3.2 Coach availability (`coach_availability_template.xlsx`)
 
@@ -68,6 +77,7 @@ One row per weekly availability block per coach.
 | Contact SF ID | Yes | Unique; duplicates are a validation error |
 | Student Name | Yes | |
 | Student Email | Yes | Must be a plausible address (`name@example.com`) |
+| Class Block | Yes | Exactly one class block from §3.1, matched case-insensitively after trimming. Blank, or two names in one cell, is a row error; a name the class schedule does not define is a parse warning and an unassigned reason (§5.3) |
 
 ### 3.4 Pairings (`pairings_template.xlsx`) — only in pre-allocated mode
 
@@ -86,8 +96,9 @@ One row per weekly availability block per coach.
    No meetings ever occur in weeks 4, 8, or 12 (guaranteed by construction; the engine must also assert this invariant in tests).
    The term therefore divides into four **blocks**: Block 1 = weeks 1–3, Block 2 = weeks 5–7, Block 3 = weeks 9–11, Block 4 = weeks 13–15. Every student has exactly one meeting per block; the offset determines which week within each block. Blocks are the redistribution boundary for §11.
 3. **Slot:** a student keeps the **same coach, same weekday, same start time** for all 4 meetings. Duration is 60 minutes.
-4. **Valid slot definition:** a 60-minute window that (a) lies entirely within one of the coach's availability blocks, (b) does not overlap any class block, and (c) starts on a 30-minute boundary (`:00` or `:30`).
-5. **Slot capacity:** each (coach, slot) pair can host at most 3 students — one per offset.
+4. **Valid slot definition:** a 60-minute window that (a) lies entirely within one of the coach's availability blocks, (b) starts on a 30-minute boundary (`:00` or `:30`), and (c) can be used by at least one class block — i.e. it is not covered by a class in *every* class block of the run. A window every cohort is in class for is dead and is not built at all.
+4a. **Class clashes are student-specific (normative).** A slot is not globally invalid because it overlaps a class. It is invalid **for a particular student** when it overlaps a class in that student's assigned class block; a class belonging to another block is irrelevant to them. Each slot therefore records which class blocks it clashes with, and the check is applied per student at assignment time — and again in the §11.3 blocking post-pass, so a rebooked meeting never lands on the student's own class.
+5. **Slot capacity:** each (coach, slot) pair can host at most 3 students — one per offset. A coach's capacity is (valid slots per §4.4) × 3, so one cohort's classes never reduce a coach's capacity for the other cohorts.
 6. **Determinism:** given identical inputs, output is identical. Slots are ordered by day (Mon→Sun) then start time; students are processed in file order; offsets fill 1→2→3 within a slot before moving to the next slot.
 
 ## 5. Assignment modes
@@ -99,13 +110,24 @@ A toggle selects one of two modes.
 - After the availability file is parsed, the UI shows an **FTE editor**: one row per coach, numeric input 0.05–1.00, default 1.00, persisted to localStorage keyed by coach name.
 - Coach capacity = (number of valid slots) × 3.
 - Target quota per coach = proportional to FTE across all coaches, scaled to total student count, computed by the largest-remainder method, then capped at capacity. If capping leaves a shortfall, redistribute the remainder to coaches with spare capacity (again by FTE proportion).
-- Students are assigned in file order: fill coach quotas in coach file order, slot by slot, offset 1→2→3.
-- If total capacity < student count, the surplus students are reported as **unassigned** with the reason `insufficient capacity`.
+- Students are assigned in file order: fill coach quotas in coach file order, slot by slot, offset 1→2→3. Each student takes the first placement that is still free, still within its coach's quota, and usable by their class block (§4.4a). With one class block this is exactly "student *i* takes placement *i*", the pre-v1.3 behaviour.
+- **Quota interpretation (normative).** A quota caps how many students a coach *takes*, not which slots are on offer: the whole of a coach's slot list stays available until their quota is used up. Truncating the list to its first *quota* placements would let one cohort's classes sitting on a coach's earliest slots starve that coach's entire quota, which is the global capacity loss §4.4a exists to prevent.
+- If no quota room is left anywhere, the surplus students are reported as **unassigned** with the reason `insufficient capacity`. If room remains but every remaining placement is during the student's own classes, the reason is `no free slot outside their class block`.
 
 ### 5.2 Pre-allocated
 
 - Requires the pairings file. Every student in the student list must appear in the pairings file (missing → unassigned, reason `no pairing`). Unknown coach names → unassigned, reason `coach not found`.
-- Within each coach, that coach's students are assigned in pairings-file order to the coach's slots, offset 1→2→3 per slot. Overflow → unassigned, reason `coach over capacity`.
+- Within each coach, that coach's students are assigned in pairings-file order to the coach's slots, offset 1→2→3 per slot, skipping any placement that clashes with the student's own class block (§4.4a). Overflow → unassigned, reason `coach over capacity`; places left that the student's classes rule out → `no free slot outside their class block`.
+
+### 5.3 Class-block assignment (normative)
+
+Every student must have exactly one valid class-block assignment, in both modes:
+
+- A blank Class Block cell, or a cell naming more than one block, is a **row error** at parse time (§8): the row is dropped and the file is rejected, so it never reaches the engine.
+- A student naming a block the class schedule does not define is a **parse warning**, and is reported as unassigned with the reason `class block not found`.
+- A student reaching the engine with no class block at all is reported as unassigned with the reason `no class block`.
+
+In no case is a student scheduled against an assumed or defaulted class block. These students are set aside before assignment, so they consume no place and no quota.
 
 ## 6. UI flow
 
@@ -113,8 +135,8 @@ A single page with a stepper:
 
 1. **Setup** — start date picker (with Monday normalisation notice), campus selector (§6.1), mode toggle, template download links.
 2. **Upload** — drag-and-drop or file pickers for the 3 (or 4) files, with per-file validation results shown immediately (row counts, errors with row numbers).
-3. **Review** — FTE editor (auto mode only); a capacity summary table (coach, valid slots, capacity, FTE, quota); warnings.
-4. **Results** — summary (students scheduled / unassigned, per-coach utilisation), an unassigned-students table with reasons, a preview of the first 50 appointment rows, and the **Export** button.
+3. **Review** — a **Class blocks** card (§6.3); FTE editor (auto mode only); a capacity summary table (coach, valid slots, capacity, FTE, quota); warnings.
+4. **Results** — summary (students scheduled / unassigned, per-coach utilisation), a **Class blocks** card (§6.4), an unassigned-students table with reasons (including each student's class block), a preview of the first 50 appointment rows, and the **Export** button.
 5. **Export settings** (collapsible panel) — see §7.
 
 All errors must be human-readable and name the file, row, and problem. The app must never fail silently.
@@ -123,7 +145,17 @@ All errors must be human-readable and name the file, row, and problem. The app m
 
 A run covers exactly one location. The Setup step offers a campus selector — **London** (`Europe/London`), **Boston** (`America/New_York`), **Dubai** (`Asia/Dubai`) — defaulting to London and persisted to localStorage. Uploaded times are naive wall-clock times at that campus, so the scheduling engine keeps working in minutes-since-midnight exactly as before; the campus zone is applied only when building the export instants (§7.1).
 
-This is what makes a single class timetable safe to compare against every coach's availability: one campus per run means one zone, so naive minute arithmetic is never comparing times from two different zones.
+This is what makes every class timetable safe to compare against every coach's availability: one campus per run means one zone, so naive minute arithmetic is never comparing times from two different zones. Class blocks are cohorts, not locations — they do not change the run's campus or zone.
+
+### 6.3 Class blocks on Review
+
+A card above the capacity table, one row per class block: block name, number of classes, **total hours** (an `--ok-tint` chip at exactly 15 hours, an `--err-tint` chip otherwise), number of students in the block, and how many of the run's coaching slots that block can use ("90 of 150"). The last column is the on-screen answer to "why is this hour not on offer to this student?". The card's summary line names how many students reference a block that is not in the class schedule.
+
+### 6.4 Class blocks on Results
+
+The same card in outcome form: block, hours, students, how many were scheduled, and slots available. Students whose class block is missing or unknown appear as a separate "Not in the class schedule" row and are never counted into a block. The unassigned/exceptions table carries a **Class block** column, so an unassigned student's reason and cohort are read together.
+
+New UI reuses the existing components in DESIGN.md (cards, tables, chips). Class blocks are cohorts and take no term-block pastel: the `--b1`…`--b4` hues continue to mean term blocks only.
 
 ## 7. Export
 
@@ -157,7 +189,9 @@ re-render the instant in the reader's local settings.
 
 The v1.1 fields (Meeting Number, Week Number, Date, Day, Start Time, End Time,
 Duration (mins)) remain available in the §7.2 mapping editor but are excluded
-by default.
+by default, as is **Class Block** (the student's cohort, added in v1.3). The
+default column set is therefore unchanged by v1.3, and a saved v3 mapping keeps
+working.
 
 Rows sorted by Date, then Start Time, then Coach Name. Filename: `appointments_YYYY-MM-DD_HHMM.xlsx` (generation timestamp).
 
@@ -176,20 +210,30 @@ An editor listing the default fields, allowing the user to: rename a column head
 - Duplicate Contact SF ID → error listing the duplicates.
 - Pairings referencing unknown students or coaches → listed as warnings at parse, become unassigned reasons at scheduling.
 - Empty file (headers only) → rejected.
+- Missing Class Block value (class schedule or student list) → row error naming the column.
+- A Class Block cell naming more than one block (a comma, semicolon, slash, pipe, `&`, `+` or "and") → row error quoting the value.
+- A class block not totalling exactly 15 hours → error naming the block, its class count, its actual total, and how far off it is.
+- Two classes of the same block overlapping → error naming the block, the day, both time ranges and both row numbers.
+- A student naming a class block the class schedule does not define → warning listing the known blocks; becomes `class block not found` at scheduling (§5.3).
 
 ## 9. Engine contract (`scheduler.js`)
 
 Pure functions, no DOM, so `tests.html` can exercise them:
 
-- `buildSlots(availability, classBlocks)` → `[{coach, day, start, end}]`
+- `buildClassBlocks(classRows)` → `[{id, name, minutes, hours, classes, rowNumbers}]` in first-appearance order (`id` = trimmed, case-folded name)
+- `classBlockKey(name)` → the matching key for a class-block name
+- `buildSlots(availability, classRowsOrBlocks)` → `[{coach, day, start, end, blockedFor}]`, where `blockedFor` lists the class-block ids the slot clashes with (§4.4a)
+- `slotAllowsClassBlock(slot, classBlock)` / `slotsForClassBlock(slots, classBlock)` → the student-specific validity test
 - `computeQuotas(coaches, fte, studentCount, slotCounts)` → `{coachName: quota}`
-- `schedule(students, slots, mode, quotasOrPairings)` → `{assignments: [{student, coach, slot, offset}], unassigned: [{student, reason}]}`
-- `expandToAppointments(assignments, startMonday, timeZone)` → appointment rows per §7.1
-- Invariant assertions in tests: no appointment in weeks 4/8/12; exactly 4 appointments per assigned student; no coach double-booked (same coach, same slot, same week); no appointment overlaps a class block.
+- `schedule(students, slots, mode, quotasOrPairings, knownCoaches, {classBlocks})` → `{assignments: [{student, coach, slot, offset}], unassigned: [{student, reason}]}`; omitting `classBlocks` skips the §5.3 checks
+- `expandToAppointments(assignments, startMonday, timeZone)` → appointment rows per §7.1, each carrying the student's `classBlock`
+- Invariant assertions in tests: no appointment in weeks 4/8/12; exactly 4 appointments per assigned student; no coach double-booked (same coach, same slot, same week); no appointment overlaps a class in the student's own class block.
+
+The parsers additionally expose `parseClassScheduleSheet(fileName, sheetRows)` and `parseStudentListSheet(fileName, sheetRows)` — the same validation applied to an already-read array-of-arrays, so `tests.html` can exercise the real rules without SheetJS or a workbook.
 
 ## 10. Out of scope (v1)
 
-Multiple cohorts/timetables per run (planned later); student-specific availability; more than one campus per run (§6.1 fixes one location per run; cross-campus scheduling would require per-block zones and absolute-time clash detection); public holidays; editing individual appointments after generation; moving a displaced meeting to a different coach.
+Per-student class timetables (a student belongs to a class block, not to a bespoke timetable); student-specific coaching availability; more than one campus per run (§6.1 fixes one location per run; cross-campus scheduling would require per-block zones and absolute-time clash detection); public holidays; editing individual appointments after generation; moving a displaced meeting to a different coach.
 
 ## 11. Blocked weeks/dates (v1.1 — implemented in Session 7; Session 6's audit excludes this section)
 
@@ -220,3 +264,21 @@ One column is appended to the §7.1 defaults: **Rescheduled From Week** (blank u
 ### 11.5 Tests
 
 tests.html must additionally assert: no appointment lands on a blocked coach-week or coach-date; every moved appointment remains within its original block and coach; invariants hold after redistribution; a coach blocked for all three weeks of a block yields exactly one exception per affected student for that block.
+
+## 12. Class-block tests (v1.3)
+
+tests.html must exercise the real engine and the real parser rules, and assert at least:
+
+1. One class block totalling exactly 15 hours is accepted.
+2. Several class blocks coexist in one run, each with its own 15 hours.
+3. A block totalling less than 15 hours is rejected, with the block name and its actual total in the message.
+4. A block totalling more than 15 hours is rejected the same way.
+5. A student in block A can be scheduled in an hour that overlaps a block B class, provided it misses every block A class.
+6. No student is ever scheduled during a class in their own block — at assignment and after the §11.3 blocking post-pass.
+7. Coach availability constraints still hold (windows inside availability, on `:00`/`:30`, 60 minutes).
+8. The cadence invariants still hold (4 meetings, one per term block, same coach/day/time, nothing in weeks 4/8/12).
+9. The blocked-week/date invariants still hold.
+10. Auto-assign still works, and a coach's capacity is not reduced by one cohort's classes.
+11. Pre-allocated mode still works and honours the student's class block.
+12. Determinism is preserved with class blocks in play.
+13. Missing, ambiguous, and unknown class-block assignments produce the §5.3 errors, warnings and unassigned reasons.

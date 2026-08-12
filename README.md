@@ -1,9 +1,14 @@
 # Term Scheduler — user guide
 
 Term Scheduler builds a term's worth of coaching meetings for you. You give it
-four things — when classes run, when each coach is free, who the students are,
-and (optionally) who coaches whom — and it hands back a spreadsheet with one
-row per meeting, ready to upload or share.
+four things — the class timetables, when each coach is free, who the students
+are, and (optionally) who coaches whom — and it hands back a spreadsheet with
+one row per meeting, ready to upload or share.
+
+A run can cover several classes at once. Each class's timetable is a **class
+block**, every student belongs to exactly one of them, and a student's coaching
+meetings only ever have to dodge their own block's classes — see
+[section 3](#class-schedule).
 
 Everything happens inside your web browser. Your spreadsheets are read on your
 own computer and are never sent anywhere. Closing the tab throws the data away.
@@ -80,8 +85,11 @@ start times; 09:15 is not.
 **A meeting must fit entirely inside one of the coach's availability blocks.**
 A coach free from 09:15 to 10:30 has exactly one usable hour: 09:30–10:30.
 
-**A meeting must not overlap a class.** Touching is fine — a class ending at
-10:00 and a meeting starting at 10:00 is allowed.
+**A meeting must not overlap a class in the student's own class block.**
+Touching is fine — a class ending at 10:00 and a meeting starting at 10:00 is
+allowed. A class belonging to a *different* class block does not get in this
+student's way at all: if Block A is in class at 11:00 and Block B is not, 11:00
+is still a perfectly good coaching hour for a Block B student, and vice versa.
 
 **Three students per slot, maximum.** Each hour in a coach's week can hold up
 to three students, one on each of the three patterns. That is what makes a
@@ -104,14 +112,39 @@ order does not matter.
 
 ### Class schedule
 
-One shared timetable for everybody in the run. One row per weekly class.
+Every class timetable in the run goes in this one file, one row per class. The
+**Class Block** column says which class each row belongs to.
 
 | Column | Required? | What goes in it |
 |---|---|---|
+| Class Block | Yes | The name of the class this row belongs to, e.g. `Block A`. Spell it the same way on every row of that block and in the student list. Capitals and stray spaces are forgiven; anything else is a different block. One name per cell — `Block A, Block B` is rejected. |
 | Day | Yes | `Monday` to `Sunday`. Capitals do not matter, and `Mon`, `Tue`, `Wed`, `Thu`, `Fri`, `Sat`, `Sun` also work. |
 | Start Time | Yes | When the class starts, e.g. `09:00`. |
 | End Time | Yes | When it ends. Must be later than the start. |
 | Class Name | No | A label for your own benefit, e.g. `Marketing Fundamentals`. Not used in the schedule. |
+
+#### Class blocks and the 15-hour rule
+
+A **class block** is one group of students' complete class timetable. You can
+have as many as you like in a run — one per cohort — and they can teach the
+same hours as each other without any trouble.
+
+**Every class block must add up to exactly 15 hours.** That is 15 hours for the
+timetable as a whole, not 15 hours a week. Five 3-hour classes make a block;
+so do ten 90-minute ones. If a block comes to anything else the file is
+rejected with a message naming the block and the total it actually came to,
+for example:
+
+> Class block "Block A" totals 12 hours across 4 classes — 3 hours short of
+> the required 15 hours. Adjust the class times for this block.
+
+Two classes in the *same* block may not overlap each other — that would count
+the same hour twice and make the 15-hour total meaningless. Two classes in
+*different* blocks may sit on the same hour; that is the normal case.
+
+The Review step shows every block, its hours, how many students are in it, and
+how many coaching slots it can use, so you can check all of this at a glance
+before you build the schedule.
 
 ### Coach availability
 
@@ -134,6 +167,7 @@ Monday and one on Thursday gets three rows.
 | Contact SF ID | Yes | The Salesforce contact ID. Must be unique — the same ID twice is an error. |
 | Student Name | Yes | The student's name, used in the export and in the on-screen tables. |
 | Student Email | Yes | The student's email address. It is exported, so it has to look like a real address. |
+| Class Block | Yes | Which class block this student is in, spelled as in the class schedule. Exactly one — a blank cell, or two names in one cell, is an error, and a name the class schedule does not contain leaves the student unscheduled. Nothing is ever assumed. |
 
 The order of this file matters a little: when there are not enough places for
 everybody, students nearer the top are scheduled first.
@@ -197,6 +231,14 @@ immediately.
 In **pre-allocated** mode you get a coverage table instead: how many students
 have been paired to each coach, and whether that fits.
 
+Above either table sits **Class blocks**: one row per class block, with its
+number of classes, its total hours (a green chip when it is exactly 15, a red
+one when it is not), how many students are in it, and how many of the run's
+coaching slots that block can actually use. That last figure is the answer to
+"why is this hour not available to this student?" — a slot the block's own
+classes cover is not on offer to its students, but stays on offer to everybody
+else.
+
 Underneath, a **Warnings** panel collects anything that is odd but not fatal —
 usually pairings pointing at people the tool cannot find.
 
@@ -208,8 +250,12 @@ by how much, before you get as far as the results.
 - A one-line summary: how many students were scheduled, how many appointments
   that makes, and how many students could not be placed.
 - **Coach utilisation** — how full each coach's diary ended up.
+- **Class blocks** — how each class block fared: hours, students, how many were
+  scheduled, and how many slots the block can use. Students whose class block
+  is missing or unknown are listed on their own row and are never counted into
+  a block.
 - **Unassigned students and exceptions** — anybody who could not be scheduled,
-  with the reason, plus any single meeting that could not be moved around a
+  with their class block and the reason, plus any single meeting that could not be moved around a
   blocked week or date (see [section 8](#8-blocked-weeks-and-dates)). If
   everyone fits, it says so.
 - **Appointments** — a preview of the first 50 rows, in exactly the columns
@@ -262,7 +308,8 @@ Excel re-display the time in whatever zone the reader's computer is set to.
 
 The older columns — Meeting Number, Week Number, Date, Day, Start Time, End
 Time, Duration — are still available in **Export settings** if you want them;
-they are just switched off by default.
+they are just switched off by default. So is **Class Block**, which puts each
+student's class block on every row of their four meetings.
 
 ---
 
@@ -274,9 +321,15 @@ Use this when you do not mind who coaches whom. The tool works out how many
 students each coach should take, based on their FTE and how many usable hours
 they have, then fills their diaries in order.
 
-Students are taken from the top of the student list. If there are more students
+Students are taken from the top of the student list. Each one takes the first
+free hour that their own class block leaves open, so two students in different
+blocks can end up in hours the other could not use. If there are more students
 than places, the ones at the bottom end up unassigned with the reason
-*insufficient capacity*.
+*insufficient capacity*; a student for whom only class-time hours are left is
+told that instead (*no free slot outside their class block*).
+
+A coach never loses capacity because one class block happens to be in class at
+that time — the hour simply goes to a student from another block.
 
 ### Pre-allocated
 
@@ -290,6 +343,8 @@ Three things can go wrong here, and each is reported per student:
 - a pairing naming a coach with no availability → *coach not found*
 - more students pointed at one coach than that coach has room for →
   *coach over capacity*
+- a student whose coach only has hours left that clash with their own class
+  block → *no free slot outside their class block*
 
 You can switch modes at any time. Uploaded files stay where they are; the
 pairings box appears and disappears with the mode.
@@ -422,6 +477,10 @@ data — the numbers match what Excel shows you down the left-hand side.
 | **"jane doe" is not a valid Student Email — expected an address like name@example.com.** | An email cell holds something that is not an address. | Correct it. Every export column is required, so the row is skipped until you do. |
 | **Coach "A. Coach" has two different Coach Email values: … (row 4) and … (row 9).** | The same coach is listed with conflicting details on different availability rows. | Make them identical. The tool will not guess which one belongs in the export. |
 | **Duplicate Contact SF ID "0031t…" appears in rows 5, 9.** | The same student appears more than once in the student list. | Delete the extra rows. All copies are ignored until you do, so the student will not be scheduled. |
+| **Missing Class Block value.** | A class row or a student row has no class block on it. | Fill it in. Every class belongs to a block, and every student belongs to exactly one — the tool never guesses. |
+| **"Block A, Block B" names more than one class block.** | One cell holds two block names. | Put a single block name in the cell. A student belongs to exactly one class block, and a class row belongs to exactly one too. |
+| **Class block "Block A" totals 12 hours across 4 classes — 3 hours short of the required 15 hours.** | The class rows for that block do not add up to 15 hours in total (not per week). | Add, remove or lengthen classes in that block until it comes to exactly 15 hours. Other blocks are unaffected. |
+| **Class block "Block A" has two overlapping classes on Monday: 09:00–12:00 (row 3) and 11:00–13:00 (row 4).** | Two classes in the same block clash, which would count the same hour twice in its 15-hour total. | Correct one of the two rows. Classes in *different* blocks may overlap freely. |
 | **The workbook has no sheets.** / **Sheet "…" could not be read.** | The file opened but there is nothing inside it. | Re-save it from Excel with your data on the first sheet. The tool always reads the first sheet. |
 
 ### Warnings about pairings
@@ -433,6 +492,7 @@ student will go unscheduled, so they are worth reading.
 |---|---|---|
 | **Contact SF ID "…" does not appear in the student list.** | The pairings file mentions somebody who is not in the student list. | Either add them to the student list, or remove the pairing row. Until then that row does nothing. |
 | **Coach Name "…" does not appear in the coach availability file.** | The pairings file names a coach who has no availability. | Check the spelling matches the availability file exactly, or add availability rows for that coach. Their students end up as *coach not found*. |
+| **Class block "Block Z" is not in the class schedule, so this student cannot be scheduled. Known class blocks: Block A, Block B.** | A student names a class block the class schedule does not define. | Fix the spelling in the student list, or add that block's classes to the class schedule. Until then the student is left unscheduled as *class block not found*. |
 
 ### Reasons a student was not scheduled
 
@@ -444,6 +504,9 @@ These show in the Unassigned students and exceptions table on the Results step.
 | **No pairing** | Pre-allocated mode: this student is in the student list but not in the pairings file. | Add a row for them in the pairings file. |
 | **Coach not found** | Their pairing names a coach with no availability. | Fix the spelling of the coach's name, or add their availability. |
 | **Coach over capacity** | More students are paired to that coach than their free hours can hold (hours × 3). | Give the coach more availability, or move some students to another coach. |
+| **No free slot outside their class block** | Every place left is during one of this student's own classes, even though places remain for students in other blocks. | Add coach availability outside that block's class hours, or check the block's timetable is right. |
+| **Class block not found** | The student names a class block that is not in the class schedule. | Correct the spelling in the student list, or add that block to the class schedule. |
+| **No class block** | The student reached the scheduler without a class block. | Fill in the Class Block column for that student. |
 | **No free slot in block N — coach blocked** | One meeting, not a whole student: the coach is blocked that week or date and every other hour of theirs in that block of the term is already taken. | Unblock a week, or give the coach another free hour inside weeks 1–3, 5–7, 9–11 or 13–15 as appropriate. The student's other three meetings are unaffected. |
 
 ### Messages about the tool itself
@@ -465,8 +528,8 @@ These appear as a banner at the top of the page and can be dismissed.
 
 ## Not included yet
 
-Out of scope: more than one class timetable per run, per-student
-availability, more than one campus per run, public holidays, and editing
+Out of scope: per-student class timetables (students belong to a class block),
+per-student coaching availability, more than one campus per run, public holidays, and editing
 individual appointments after they are generated.
 
 ---

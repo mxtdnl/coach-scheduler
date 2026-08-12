@@ -36,6 +36,10 @@ const DEFAULT_FIELDS = [
  * naive date/time columns in particular remain useful for eyeballing a run.
  */
 const OPTIONAL_FIELDS = [
+  // The student's class block (SPEC.md §3.1). Off by default so the §7.1
+  // column set is unchanged, but available for anyone who wants the cohort
+  // named in the output.
+  ['classBlock', 'Class Block'],
   ['meetingNumber', 'Meeting Number'],
   ['weekNumber', 'Week Number'],
   ['date', 'Date'],

@@ -36,9 +36,13 @@ import {
   parseStudentList,
   parsePairings,
   checkPairingsReferences,
+  checkStudentClassBlocks,
 } from './parse.js';
 import {
   buildSlots,
+  buildClassBlocks,
+  classBlockKey,
+  slotsForClassBlock,
   computeQuotas,
   schedule,
   expandToAppointments,
@@ -47,6 +51,7 @@ import {
   EXCLUDED_WEEKS,
   TERM_WEEKS,
   MAX_STUDENTS_PER_SLOT,
+  CLASS_BLOCK_TOTAL_MINUTES,
   REASONS,
 } from './scheduler.js';
 import {
@@ -289,16 +294,36 @@ function renderIssueList(label, issues, kind) {
 function computeDisplayResult(key) {
   const upload = state.uploads[key];
   if (!upload) return null;
-  if (key !== 'pairings') return upload.result;
 
-  const studentIds = new Set((state.uploads.studentList?.result.rows ?? []).map((r) => r.contactSfId));
-  const coachNames = new Set((state.uploads.coachAvailability?.result.rows ?? []).map((r) => r.coachName));
-  const crossWarnings = checkPairingsReferences(upload.fileName, upload.result.rows, studentIds, coachNames);
-  return {
-    rows: upload.result.rows,
-    errors: upload.result.errors,
-    warnings: [...upload.result.warnings, ...crossWarnings],
-  };
+  if (key === 'pairings') {
+    const studentIds = new Set((state.uploads.studentList?.result.rows ?? []).map((r) => r.contactSfId));
+    const coachNames = new Set((state.uploads.coachAvailability?.result.rows ?? []).map((r) => r.coachName));
+    const crossWarnings = checkPairingsReferences(upload.fileName, upload.result.rows, studentIds, coachNames);
+    return {
+      rows: upload.result.rows,
+      errors: upload.result.errors,
+      warnings: [...upload.result.warnings, ...crossWarnings],
+    };
+  }
+
+  // A student naming a class block the class schedule does not define
+  // (SPEC.md §5.3) — cross-file, so computed against whatever class schedule
+  // is currently loaded rather than stored on the student upload.
+  if (key === 'studentList') {
+    const crossWarnings = checkStudentClassBlocks(upload.fileName, upload.result.rows, currentClassBlocks());
+    return {
+      rows: upload.result.rows,
+      errors: upload.result.errors,
+      warnings: [...upload.result.warnings, ...crossWarnings],
+    };
+  }
+
+  return upload.result;
+}
+
+/** The run's class blocks, from the class schedule upload if it parsed cleanly. */
+function currentClassBlocks() {
+  return buildClassBlocks(rowsFor('classSchedule'));
 }
 
 function renderUploadResult(key) {
@@ -381,6 +406,8 @@ async function handleFileForKey(key, file) {
     renderUploadResult(key);
     // Pairings' displayed warnings depend on these two files; refresh it too.
     if (key === 'studentList' || key === 'coachAvailability') renderUploadResult('pairings');
+    // The student list's class-block warnings depend on the class schedule.
+    if (key === 'classSchedule') renderUploadResult('studentList');
   });
 
   refreshComputedSteps();
@@ -869,7 +896,8 @@ function blockedExplanation() {
  */
 function computeEngineState() {
   const availabilityRows = rowsFor('coachAvailability');
-  const classBlocks = rowsFor('classSchedule');
+  const classRows = rowsFor('classSchedule');
+  const classBlocks = buildClassBlocks(classRows);
   const studentRows = rowsFor('studentList');
   const pairingRows = rowsFor('pairings');
 
@@ -883,6 +911,15 @@ function computeEngineState() {
   });
 
   const slots = buildSlots(availabilityRows, classBlocks);
+
+  // Per-class-block usable slots and student counts (SPEC.md §6.3): a slot a
+  // class blocks out for one cohort is still capacity for the others, so this
+  // is what explains why a given hour is or is not on offer to a student.
+  const classBlockStats = classBlocks.map((block) => ({
+    ...block,
+    usableSlots: slotsForClassBlock(slots, block.id).length,
+    studentCount: studentRows.filter((s) => classBlockKey(s.classBlock) === block.id).length,
+  }));
 
   const slotCounts = {};
   coaches.forEach((c) => {
@@ -911,10 +948,10 @@ function computeEngineState() {
   let unassigned = [];
 
   if (state.mode === 'pre-allocated') {
-    ({ assignments, unassigned } = schedule(studentRows, slots, 'pre-allocated', pairingRows, coaches));
+    ({ assignments, unassigned } = schedule(studentRows, slots, 'pre-allocated', pairingRows, coaches, { classBlocks }));
   } else {
     quotas = computeQuotas(coaches, fte, studentCount, slotCounts);
-    ({ assignments, unassigned } = schedule(studentRows, slots, 'auto', quotas));
+    ({ assignments, unassigned } = schedule(studentRows, slots, 'auto', quotas, coaches, { classBlocks }));
   }
 
   const timeZone = campusOrDefault(state.campusId).timeZone;
@@ -940,6 +977,8 @@ function computeEngineState() {
 
   return {
     coaches,
+    classBlocks,
+    classBlockStats,
     slots,
     slotCounts,
     capacity,
@@ -957,6 +996,70 @@ function computeEngineState() {
     engineBlocks,
     scheduledByCoach,
   };
+}
+
+/**
+ * The class blocks in the run (SPEC.md §6.3): what each cohort's timetable
+ * totals, how many students are in it, and how many of the coaching slots it
+ * can actually use once its own classes are taken out. The hours column is the
+ * 15-hour rule made visible; the slots column is the answer to "why can this
+ * student not be put at 10:00?".
+ */
+function renderClassBlocksCard(eng) {
+  const totalSlots = eng.slots.length;
+
+  if (eng.classBlockStats.length === 0) {
+    return `
+    <div class="card">
+      <h2>Class blocks</h2>
+      <div class="table-wrap"><p class="table-empty">Upload the class schedule to see the class blocks in this run.</p></div>
+    </div>`;
+  }
+
+  const unknownBlockStudents = eng.studentRows.filter(
+    (student) => !eng.classBlocks.some((block) => block.id === classBlockKey(student.classBlock))
+  );
+
+  const rows = eng.classBlockStats
+    .map((block) => {
+      const exact = block.minutes === CLASS_BLOCK_TOTAL_MINUTES;
+      const hoursChip = exact
+        ? '<span class="chip chip-ok">15 hours</span>'
+        : `<span class="chip chip-exception">${block.hours} hours</span>`;
+      return `
+    <tr>
+      <td>${escapeHtml(block.name || '(unnamed)')}</td>
+      <td class="mono num">${block.classes.length}</td>
+      <td>${hoursChip}</td>
+      <td class="mono num">${block.studentCount}</td>
+      <td class="mono num">${block.usableSlots} of ${totalSlots}</td>
+    </tr>`;
+    })
+    .join('');
+
+  const summaryBits = [
+    `${eng.classBlockStats.length} class block${eng.classBlockStats.length === 1 ? '' : 's'}`,
+    `${totalSlots} coaching slot${totalSlots === 1 ? '' : 's'} across all coaches`,
+  ];
+  if (unknownBlockStudents.length > 0) {
+    summaryBits.push(
+      unknownBlockStudents.length === 1
+        ? '1 student names a class block that is not in the class schedule'
+        : `${unknownBlockStudents.length} students name a class block that is not in the class schedule`
+    );
+  }
+
+  return `
+    <div class="card">
+      <h2>Class blocks</h2>
+      <p class="help-text">${summaryBits.join(' · ')}. Every class block must total exactly 15 hours. A coaching slot is offered to a student only when it misses every class in their own block.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Class block</th><th class="num">Classes</th><th>Total hours</th><th class="num">Students</th><th class="num">Slots available</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
 }
 
 function renderFteAndCapacityTable(eng) {
@@ -1143,6 +1246,8 @@ function renderReview() {
     );
   }
 
+  parts.push(renderClassBlocksCard(eng));
+
   if (state.mode === 'pre-allocated') {
     if (!isUploadUsable('pairings')) {
       parts.push(
@@ -1201,6 +1306,63 @@ function renderUtilisationTable(eng) {
 }
 
 /**
+ * How each class block fared (SPEC.md §6.4): who is in it, how many were
+ * scheduled, and how much of the coaching timetable its classes leave open.
+ * Students whose class block is missing or unknown are listed separately —
+ * they are never scheduled against a guessed block (§5.3).
+ */
+function renderClassBlockResults(eng) {
+  if (eng.classBlockStats.length === 0) return '';
+
+  const scheduledByBlock = new Map();
+  eng.assignments.forEach(({ student }) => {
+    const key = classBlockKey(student.classBlock);
+    scheduledByBlock.set(key, (scheduledByBlock.get(key) || 0) + 1);
+  });
+
+  const knownIds = new Set(eng.classBlocks.map((block) => block.id));
+  const strays = eng.studentRows.filter((student) => !knownIds.has(classBlockKey(student.classBlock)));
+
+  const rows = eng.classBlockStats
+    .map((block) => {
+      const scheduled = scheduledByBlock.get(block.id) || 0;
+      return `
+    <tr>
+      <td>${escapeHtml(block.name || '(unnamed)')}</td>
+      <td class="mono num">${block.hours}</td>
+      <td class="mono num">${block.studentCount}</td>
+      <td class="mono-500 num">${scheduled}</td>
+      <td class="mono num">${block.usableSlots} of ${eng.slots.length}</td>
+    </tr>`;
+    })
+    .join('');
+
+  const strayRow =
+    strays.length > 0
+      ? `
+    <tr>
+      <td>Not in the class schedule</td>
+      <td class="mono num">—</td>
+      <td class="mono num">${strays.length}</td>
+      <td class="mono-500 num">0</td>
+      <td class="mono num">—</td>
+    </tr>`
+      : '';
+
+  return `
+    <div class="card">
+      <h2>Class blocks</h2>
+      <p class="help-text">A student's coaching slot never overlaps a class in their own block. Classes in another block do not limit them.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Class block</th><th class="num">Hours</th><th class="num">Students</th><th class="num">Scheduled</th><th class="num">Slots available</th></tr></thead>
+          <tbody>${rows}${strayRow}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+/**
  * Unassigned students (SPEC.md §5) and the per-meeting exceptions the
  * blocking post-pass could not rebook (§11.3(3), §11.4), in one table: both
  * are "this did not get scheduled, and here is why".
@@ -1218,6 +1380,7 @@ function renderExceptionsTable(eng) {
     ({ student, reason }) => `
     <tr>
       <td>${escapeHtml(student.studentName)} <span class="mono">${escapeHtml(student.contactSfId)}</span></td>
+      <td>${escapeHtml(student.classBlock || '—')}</td>
       <td>All 4 meetings</td>
       <td><span class="chip chip-exception">${escapeHtml(capitalize(reason))}</span></td>
     </tr>`
@@ -1227,6 +1390,7 @@ function renderExceptionsTable(eng) {
     ({ student, coach, meetingNumber, week, reason }) => `
     <tr>
       <td>${escapeHtml(student.studentName)} <span class="mono">${escapeHtml(student.contactSfId)}</span></td>
+      <td>${escapeHtml(student.classBlock || '—')}</td>
       <td>Meeting <span class="mono">${meetingNumber}</span> · week <span class="mono">${week}</span> · ${escapeHtml(coach)}</td>
       <td><span class="chip chip-exception">${escapeHtml(capitalize(reason))}</span></td>
     </tr>`
@@ -1250,7 +1414,7 @@ function renderExceptionsTable(eng) {
       <p class="help-text">${summaryBits.join(' · ')}.</p>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Student</th><th>Meetings</th><th>Reason</th></tr></thead>
+          <thead><tr><th>Student</th><th>Class block</th><th>Meetings</th><th>Reason</th></tr></thead>
           <tbody>${[...unassignedRows, ...exceptionRows].join('')}</tbody>
         </table>
       </div>
@@ -1356,7 +1520,12 @@ function renderResults() {
 
   sub.innerHTML = `<span class="mono-500">${scheduledCount}</span> of <span class="mono-500">${eng.studentCount}</span> students scheduled · <span class="mono-500">${eng.appointments.length}</span> appointments${movedNote}${unassignedChip}${exceptionChip}`;
 
-  const parts = [renderUtilisationTable(eng), renderExceptionsTable(eng), renderAppointmentsPreview(eng)];
+  const parts = [
+    renderUtilisationTable(eng),
+    renderClassBlockResults(eng),
+    renderExceptionsTable(eng),
+    renderAppointmentsPreview(eng),
+  ];
 
   container.innerHTML = parts.join('');
   attachExportButtonHandler();

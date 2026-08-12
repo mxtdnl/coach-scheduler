@@ -102,7 +102,7 @@
 
         <div class="card">
           <h2>Templates</h2>
-          <p class="help-text">Download, fill in, and upload these on the next step. Pairings is only needed in pre-allocated mode.</p>
+          <p class="help-text">Download, fill in, and upload these on the next step. Pairings is only needed in pre-allocated mode. The class schedule and student list both carry a Class Block column: each class block is one cohort's timetable, totalling exactly 15 hours, and every student belongs to one of them.</p>
           <ul class="template-list">
             <li>
               <a href="templates/class_schedule_template.xlsx" download>Class schedule template</a>
@@ -131,7 +131,7 @@
 
         <div class="card upload-card">
           <h2>Class schedule</h2>
-          <p class="help-text">Class times that coaching meetings must avoid.</p>
+          <p class="help-text">One row per class, each naming its class block. A class block is one cohort's whole timetable and must total exactly 15 hours.</p>
           <label class="dropzone" data-upload="classSchedule">
             <input type="file" accept=".xlsx" class="file-input" hidden />
             <span class="dropzone-text">Drag and drop the file here, or click to choose</span>
@@ -159,7 +159,7 @@
 
         <div class="card upload-card">
           <h2>Student list</h2>
-          <p class="help-text">One row per student, with the Salesforce contact ID.</p>
+          <p class="help-text">One row per student, with the Salesforce contact ID and the class block they belong to.</p>
           <label class="dropzone" data-upload="studentList">
             <input type="file" accept=".xlsx" class="file-input" hidden />
             <span class="dropzone-text">Drag and drop the file here, or click to choose</span>
