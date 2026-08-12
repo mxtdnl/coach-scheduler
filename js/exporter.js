@@ -124,6 +124,16 @@ export function buildExportFilename(now = new Date()) {
   return `appointments_${y}-${m}-${d}_${hh}${mm}.xlsx`;
 }
 
+/** coach_assignments_YYYY-MM-DD_HHMM.xlsx (SPEC.md §7.3). */
+export function buildCoachAssignmentsFilename(now = new Date()) {
+  const y = now.getFullYear();
+  const m = pad2(now.getMonth() + 1);
+  const d = pad2(now.getDate());
+  const hh = pad2(now.getHours());
+  const mm = pad2(now.getMinutes());
+  return `coach_assignments_${y}-${m}-${d}_${hh}${mm}.xlsx`;
+}
+
 function valueForField(field, row) {
   if (field === 'date') return row.dateValue;
   const value = row[field];
@@ -225,6 +235,185 @@ export function exportAppointments(appointments, mapping) {
   XLSX.utils.book_append_sheet(workbook, worksheet, 'Appointments');
 
   const filename = buildExportFilename();
+  XLSX.writeFile(workbook, filename);
+  return filename;
+}
+
+// ---- SPEC.md §7.3 — coach-assignments batch upload (auto-assign only) ----
+//
+// A fixed seven-column integration format, deliberately kept out of the §7.2
+// mapping editor: the receiving batch-upload template matches on header text
+// and constant values, so a user's renamed/reordered appointment columns must
+// not be able to reshape this file. One row per scheduled student, never one
+// per meeting.
+
+/** The seven headers, in the exact required order (SPEC.md §7.3). */
+export const COACH_ASSIGNMENT_HEADERS = Object.freeze([
+  'Student Name',
+  'Record Type',
+  'Record Type Name',
+  'Type',
+  'Coach Name',
+  'Coach User ID',
+  'Status',
+]);
+
+/** The constant values written on every row (SPEC.md §7.3). */
+export const COACH_ASSIGNMENT_CONSTANTS = Object.freeze({
+  recordType: '0121Q000001Dw6tQAC',
+  recordTypeName: 'Institutional Relations',
+  type: 'coach',
+  status: 'current',
+});
+
+/**
+ * The coach's Salesforce id for an assignment. `Coach User ID` is an export
+ * header only: the underlying value is the `Coach SF ID` parsed from the
+ * availability file (SPEC.md §3.2), carried onto every slot by `buildSlots`,
+ * so there is no second input field and no second source of truth.
+ */
+function coachSfIdOf(assignment) {
+  const raw = assignment?.slot?.coachSfId;
+  return raw === undefined || raw === null ? '' : String(raw).trim();
+}
+
+/**
+ * Coaches in the final schedule whose Coach SF ID is missing or blank, in
+ * first-assignment order. The parser already rejects a blank Coach SF ID
+ * (SPEC.md §8) and a coach whose rows disagree, so this is a last line of
+ * defence rather than a second rule — but exporting a blank `Coach User ID`
+ * would silently produce an unusable batch upload, so the export refuses
+ * instead (SPEC.md §7.3).
+ */
+export function findCoachesWithoutSfId(assignments) {
+  const bad = [];
+  const seen = new Set();
+  (assignments || []).forEach((assignment) => {
+    const coach = assignment?.coach ?? assignment?.slot?.coach ?? '';
+    if (seen.has(coach)) return;
+    if (coachSfIdOf(assignment) !== '') return;
+    seen.add(coach);
+    bad.push(coach);
+  });
+  return bad;
+}
+
+/** The §7.3 refusal message for coaches with no usable Coach SF ID. */
+export function coachSfIdErrorMessage(coaches) {
+  const names = coaches.map((name) => `"${name || '(unnamed coach)'}"`).join(', ');
+  return coaches.length === 1
+    ? `Coach ${names} has no Coach SF ID, so Coach User ID would be blank. Add the Coach SF ID to the coach availability file and upload it again.`
+    : `These coaches have no Coach SF ID, so Coach User ID would be blank: ${names}. Add the Coach SF ID values to the coach availability file and upload it again.`;
+}
+
+/**
+ * One row per scheduled student (SPEC.md §7.3), built from the scheduler's
+ * `assignments` — the authoritative final student → coach mapping. Meetings
+ * are irrelevant here: a student with four meetings still gets one row, and
+ * a student whose meeting was displaced or turned into an exception by the
+ * §11.3 blocking post-pass keeps their row, because that post-pass never
+ * changes a student's coach. Unassigned students are not in `assignments`,
+ * so they are excluded by construction.
+ *
+ * Order is the scheduler's own assignment order (student file order in auto
+ * mode), so identical inputs give an identical file.
+ *
+ * @param {Array<{student:object, coach:string, slot:object}>} assignments
+ * @returns {Array<{studentName, recordType, recordTypeName, type, coachName, coachUserId, status}>}
+ */
+export function buildCoachAssignmentRows(assignments) {
+  const rows = [];
+  const seenStudents = new Set();
+  (assignments || []).forEach((assignment) => {
+    const student = assignment?.student;
+    if (!student) return;
+    // Belt and braces against a duplicate row for one student/coach pair: the
+    // engine assigns each student at most once, and the key is the student's
+    // unique Contact SF ID (SPEC.md §3.3) where one exists.
+    const key = student.contactSfId || student.studentName || '';
+    if (seenStudents.has(key)) return;
+    seenStudents.add(key);
+    rows.push({
+      studentName: student.studentName || '',
+      recordType: COACH_ASSIGNMENT_CONSTANTS.recordType,
+      recordTypeName: COACH_ASSIGNMENT_CONSTANTS.recordTypeName,
+      type: COACH_ASSIGNMENT_CONSTANTS.type,
+      coachName: assignment.coach ?? assignment.slot?.coach ?? '',
+      coachUserId: coachSfIdOf(assignment),
+      status: COACH_ASSIGNMENT_CONSTANTS.status,
+    });
+  });
+  return rows;
+}
+
+/** The §7.3 workbook as an array of arrays: headers first, then one row per student. */
+export function buildCoachAssignmentAoa(assignments) {
+  const rows = buildCoachAssignmentRows(assignments).map((row) => [
+    row.studentName,
+    row.recordType,
+    row.recordTypeName,
+    row.type,
+    row.coachName,
+    row.coachUserId,
+    row.status,
+  ]);
+  return [[...COACH_ASSIGNMENT_HEADERS], ...rows];
+}
+
+/**
+ * Builds the §7.3 workbook without writing it, so the exact cells that reach
+ * the file can be asserted in tests. Auto-assign only — the caller is
+ * responsible for not offering the control in pre-allocated mode, and this
+ * refuses as well so the rule holds however the function is reached.
+ */
+export function buildCoachAssignmentsWorkbook(assignments, mode = 'auto') {
+  // Data problems are checked before SheetJS is touched, so a run with a
+  // missing Coach SF ID reports that rather than an unrelated library error.
+  if (mode !== 'auto') {
+    throw new Error('The coach assignments export is only available in auto-assign mode.');
+  }
+  if (!assignments || assignments.length === 0) {
+    throw new Error('There are no coach assignments to export.');
+  }
+  const missing = findCoachesWithoutSfId(assignments);
+  if (missing.length > 0) {
+    throw new Error(coachSfIdErrorMessage(missing));
+  }
+
+  const XLSX = getXLSX();
+  const aoa = buildCoachAssignmentAoa(assignments);
+  const worksheet = XLSX.utils.aoa_to_sheet(aoa);
+
+  // Every cell is text. Salesforce ids such as 0121Q000001Dw6tQAC are opaque
+  // 18-character strings; leaving a cell's type to inference risks Excel (or
+  // a future SheetJS default) reading an all-digit id as a number and
+  // rendering it in scientific notation or dropping its leading zeros.
+  for (let r = 0; r < aoa.length; r++) {
+    for (let c = 0; c < COACH_ASSIGNMENT_HEADERS.length; c++) {
+      const cell = worksheet[XLSX.utils.encode_cell({ r, c })];
+      if (cell) {
+        cell.t = 's';
+        cell.v = String(cell.v ?? '');
+        delete cell.z;
+      }
+    }
+  }
+
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, 'Coach Assignments');
+  return workbook;
+}
+
+/**
+ * Generates the coach-assignments batch upload (SPEC.md §7.3) and triggers a
+ * download. Returns the filename used.
+ */
+export function exportCoachAssignments(assignments, mode = 'auto') {
+  // Built first: it reports a data problem (wrong mode, nothing to export, a
+  // missing Coach SF ID) before SheetJS is needed at all.
+  const workbook = buildCoachAssignmentsWorkbook(assignments, mode);
+  const XLSX = getXLSX();
+  const filename = buildCoachAssignmentsFilename();
   XLSX.writeFile(workbook, filename);
   return filename;
 }

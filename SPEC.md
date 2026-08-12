@@ -1,10 +1,10 @@
 # Coaching Meeting Scheduler — Technical Specification
 
-Version 1.3 — 12 August 2026 (adds §3.1/§4.4a/§5.3/§12 multiple class blocks; §6.1 Campus and §7.1 export columns from v1.2; §11 Blocked weeks/dates from v1.1)
+Version 1.4 — 12 August 2026 (adds §7.3/§13 the auto-assign coach-assignments batch upload — a **second** export alongside the §7.1 appointments file; §3.1/§4.4a/§5.3/§12 multiple class blocks from v1.3; §6.1 Campus and §7.1 export columns from v1.2; §11 Blocked weeks/dates from v1.1)
 
 ## 1. Purpose
 
-A browser-based tool that allocates recurring 1-hour coaching meetings to students and coaches for a 15-week term. It reads Excel uploads (class timetables, coach availability, student list, optional student–coach pairings), computes a clash-free schedule under fixed cadence rules, and exports one Excel row per appointment. No server. No data leaves the browser. Hosted on GitHub Pages.
+A browser-based tool that allocates recurring 1-hour coaching meetings to students and coaches for a 15-week term. It reads Excel uploads (class timetables, coach availability, student list, optional student–coach pairings), computes a clash-free schedule under fixed cadence rules, and exports the result as Excel: one row per appointment, plus — in auto-assign mode — a second batch-upload file with one row per student/coach assignment (§7.3). No server. No data leaves the browser. Hosted on GitHub Pages.
 
 A run may contain **several class blocks** — distinct student cohorts, each with its own class timetable. Coaching availability is coach-specific and spans the whole run; class clashes are per student, judged against their own class block only (§4.4a).
 
@@ -25,11 +25,11 @@ A run may contain **several class blocks** — distinct student cohorts, each wi
 │   ├── app.js          # UI wiring, state, step flow
 │   ├── parse.js        # Excel parsing + validation for the 4 file types
 │   ├── scheduler.js    # Pure scheduling engine (no DOM access)
-│   ├── exporter.js     # Default + custom-mapped Excel export
+│   ├── exporter.js     # Default + custom-mapped appointments export, and the §7.3 batch upload
 │   ├── timezone.js     # Campus → IANA zone, offset-bearing ISO formatting
 │   └── storage.js      # localStorage read/write helpers
 ├── templates/          # The 4 .xlsx templates, downloadable from the UI
-├── tests.html          # Loads scheduler.js and runs assertions in-browser
+├── tests.html          # Loads scheduler.js/exporter.js and runs assertions in-browser
 ├── SPEC.md             # This file
 ├── BUILD_GUIDE.md
 └── README.md
@@ -136,7 +136,7 @@ A single page with a stepper:
 1. **Setup** — start date picker (with Monday normalisation notice), campus selector (§6.1), mode toggle, template download links.
 2. **Upload** — drag-and-drop or file pickers for the 3 (or 4) files, with per-file validation results shown immediately (row counts, errors with row numbers).
 3. **Review** — a **Class blocks** card (§6.3); FTE editor (auto mode only); a capacity summary table (coach, valid slots, capacity, FTE, quota); warnings.
-4. **Results** — summary (students scheduled / unassigned, per-coach utilisation), a **Class blocks** card (§6.4), an unassigned-students table with reasons (including each student's class block), a preview of the first 50 appointment rows, and the **Export** button.
+4. **Results** — summary (students scheduled / unassigned, per-coach utilisation), a **Class blocks** card (§6.4), an unassigned-students table with reasons (including each student's class block), a preview of the first 50 appointment rows with the **Export appointments** button, and — in auto-assign mode only — a **Coach assignments** card with the **Export coach assignments** button (§7.3). The run therefore produces **two** export files in auto-assign mode and one in pre-allocated mode.
 5. **Export settings** (collapsible panel) — see §7.
 
 All errors must be human-readable and name the file, row, and problem. The app must never fail silently.
@@ -158,6 +158,12 @@ The same card in outcome form: block, hours, students, how many were scheduled, 
 New UI reuses the existing components in DESIGN.md (cards, tables, chips). Class blocks are cohorts and take no term-block pastel: the `--b1`…`--b4` hues continue to mean term blocks only.
 
 ## 7. Export
+
+A run produces up to **two** files: the appointments export (§7.1/§7.2, one row
+per appointment, always available), and — in auto-assign mode only — the
+coach-assignments batch upload (§7.3, one row per scheduled student). They are
+separate files with separate buttons and separate filenames; neither replaces
+the other.
 
 ### 7.1 Default columns (one row per appointment; 4 rows per scheduled student)
 
@@ -199,6 +205,84 @@ Rows sorted by Date, then Start Time, then Coach Name. Filename: `appointments_Y
 
 An editor listing the default fields, allowing the user to: rename a column header, reorder columns, exclude columns, and add **constant columns** (fixed header + fixed value on every row — e.g. `Record Type = Coaching`). The mapping is saved to localStorage and applied on export. A "Reset to defaults" button restores §7.1. The mapping is stored under a versioned key (`coachScheduler.exportMapping.v2`); a mapping saved against an older default column set is ignored rather than partially restored, so a returning user gets the current defaults. This exists so the output can later be shaped to match a batch-upload template.
 
+### 7.3 Coach-assignments batch upload (v1.4, normative)
+
+A **second** export, in the Salesforce batch-upload template's shape. It
+describes **coach assignments, not meetings**: one row per scheduled student.
+
+**Availability.** Offered only when the current run uses **auto-assign** and a
+valid schedule exists. In pre-allocated mode the control is not rendered at
+all — the student→coach mapping there is the user's own pairings file, so a
+"coach assignments" export would state back what was uploaded, and this
+specification scopes the file to auto-assign. `exportCoachAssignments` refuses
+a non-auto mode as well, so the rule holds however the function is reached.
+When no student was assigned a coach, the control is present but disabled.
+
+**Columns (exact headers, exact order).**
+
+| # | Column | Value |
+|---|---|---|
+| 1 | `Student Name` | the scheduled student's name |
+| 2 | `Record Type` | constant `0121Q000001Dw6tQAC` |
+| 3 | `Record Type Name` | constant `Institutional Relations` |
+| 4 | `Type` | constant `coach` |
+| 5 | `Coach Name` | the coach the scheduler assigned |
+| 6 | `Coach User ID` | that coach's existing **Coach SF ID** (§3.2) |
+| 7 | `Status` | constant `current` |
+
+This is a **fixed integration format**. It is deliberately outside the §7.2
+mapping editor: the user's renamed, reordered, excluded or constant appointment
+columns must not be able to reshape this file, and no §7.2 setting changes any
+of the seven headers or four constants.
+
+**Coach User ID = Coach SF ID (normative).** `Coach User ID` is an *export
+header name only*. The underlying value is the existing `Coach SF ID` from the
+coach availability file (§3.2), carried onto every slot by `buildSlots` and
+read from the assignment's slot at export time. There is **no** new coach input
+field, and no new column in the coach availability template. All existing
+`Coach SF ID` parsing and validation (§8: required, non-blank, identical on
+every row for a coach) is unchanged and is the only validation this column has.
+
+**One row per student (normative).**
+
+- A student with four coaching meetings produces **one** row, not four.
+- The row names the coach the student was **ultimately assigned** in the final
+  schedule — read from the scheduler's `assignments` structure, never inferred
+  from appointment row order.
+- A student who is **unassigned** (§5.1, §5.2, §5.3) is not in `assignments`
+  and is therefore excluded from the file entirely.
+- A student who has a §11.3 **scheduling exception** — one meeting that could
+  not be rebooked around a blocked week — still appears, exactly once, with
+  their assigned coach. The blocking post-pass never changes a student's coach
+  (§11.3), so the assignment the row states remains true; only one of that
+  student's four meetings is missing from the *appointments* export.
+- No duplicate rows: a student appears at most once, keyed on their (unique,
+  §3.3) Contact SF ID.
+
+**Determinism.** Rows are emitted in the scheduler's own assignment order,
+which in auto-assign mode is student-file order (§4.6). Identical inputs
+produce an identical file.
+
+**Validation and errors.** If any coach in the final schedule has a missing or
+blank `Coach SF ID`, the export is **refused**: no file is written, no blank
+`Coach User ID` is exported, and a human-readable error names the affected
+coach or coaches and the fix ("Add the Coach SF ID to the coach availability
+file and upload it again"). The Results card shows the same message in the
+§3.5 error list and disables the button. This is a defence in depth: §8 already
+rejects a blank `Coach SF ID` at parse time.
+
+**Format.** A `.xlsx` workbook generated through the existing SheetJS setup
+(§2), single sheet named `Coach Assignments`. Every cell is written as a
+**text** cell with no number format, so an opaque Salesforce identifier — in
+particular an all-digit one — is never reformatted, rounded, converted to
+scientific notation, or stripped of leading zeros by Excel.
+
+**Filename.** `coach_assignments_YYYY-MM-DD_HHMM.xlsx` (generation timestamp),
+matching the §7.1 timestamp convention while being clearly distinct from
+`appointments_…xlsx`.
+
+**Test expectations** are §13.
+
 ## 8. Validation rules (parse stage)
 
 - Missing required column → file rejected, message names the column.
@@ -228,6 +312,16 @@ Pure functions, no DOM, so `tests.html` can exercise them:
 - `schedule(students, slots, mode, quotasOrPairings, knownCoaches, {classBlocks})` → `{assignments: [{student, coach, slot, offset}], unassigned: [{student, reason}]}`; omitting `classBlocks` skips the §5.3 checks
 - `expandToAppointments(assignments, startMonday, timeZone)` → appointment rows per §7.1, each carrying the student's `classBlock`
 - Invariant assertions in tests: no appointment in weeks 4/8/12; exactly 4 appointments per assigned student; no coach double-booked (same coach, same slot, same week); no appointment overlaps a class in the student's own class block.
+
+`exporter.js` exposes the §7.3 batch upload as pure functions alongside the
+download entry point, so `tests.html` can assert on the exact rows and cells:
+
+- `buildCoachAssignmentRows(assignments)` → one object per scheduled student
+- `buildCoachAssignmentAoa(assignments)` → `[headers, ...rows]`
+- `findCoachesWithoutSfId(assignments)` / `coachSfIdErrorMessage(coaches)` → the §7.3 refusal
+- `buildCoachAssignmentsWorkbook(assignments, mode)` → the SheetJS workbook, without writing it
+- `exportCoachAssignments(assignments, mode)` → writes the file, returns the filename
+- `COACH_ASSIGNMENT_HEADERS` / `COACH_ASSIGNMENT_CONSTANTS` / `buildCoachAssignmentsFilename(now)`
 
 The parsers additionally expose `parseClassScheduleSheet(fileName, sheetRows)` and `parseStudentListSheet(fileName, sheetRows)` — the same validation applied to an already-read array-of-arrays, so `tests.html` can exercise the real rules without SheetJS or a workbook.
 
@@ -282,3 +376,28 @@ tests.html must exercise the real engine and the real parser rules, and assert a
 11. Pre-allocated mode still works and honours the student's class block.
 12. Determinism is preserved with class blocks in play.
 13. Missing, ambiguous, and unknown class-block assignments produce the §5.3 errors, warnings and unassigned reasons.
+
+## 13. Coach-assignments batch-upload tests (v1.4)
+
+tests.html must exercise the real exporter functions and assert at least:
+
+1. An auto-assign run produces the second export.
+2. The output has exactly the seven §7.3 headers, in exactly that order, and every row has seven cells.
+3. `Record Type` is `0121Q000001Dw6tQAC` on every row.
+4. `Record Type Name` is `Institutional Relations` on every row.
+5. `Type` is `coach` on every row.
+6. `Status` is `current` on every row.
+7. Each scheduled student appears exactly once.
+8. A student with four coaching appointments appears once, not four times.
+9. The exported coach is the student's actual final assigned coach, with more than one coach in play.
+10. `Coach User ID` exactly equals the source `Coach SF ID`, both as uploaded and as carried on the slot.
+11. No new coach input field is needed: an availability row carrying only the §3.2 columns populates `Coach User ID`.
+12. Unassigned students are excluded.
+13. A missing or blank `Coach SF ID` is detected, names the coach, and refuses the export.
+14. Output is deterministic, and row order follows the scheduler's assignment order.
+15. Pre-allocated mode does not produce the export (both entry points refuse).
+16. The §7.1 appointments export is unchanged — default columns and filename.
+17. A custom §7.2 appointment mapping does not change the seven-column batch upload.
+18. The generated workbook carries the exact headers and values, and Salesforce identifiers survive a write/read round-trip as text (including an all-digit id keeping its leading zeros).
+
+Workbook assertions need SheetJS; when the CDN is unreachable those tests report as **skipped** rather than failed, and the pure data-builder tests still run.
