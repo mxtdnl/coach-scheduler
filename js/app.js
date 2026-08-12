@@ -4,6 +4,7 @@
 // session's work.
 
 import { getStartDate, setStartDate, getMode, setMode, getFteMap, setFte } from './storage.js';
+import { renderTermRibbon } from './ribbon.js';
 import {
   parseClassSchedule,
   parseCoachAvailability,
@@ -72,7 +73,7 @@ function toISODate(date) {
 function formatReadable(isoDate) {
   const [year, month, day] = isoDate.split('-').map(Number);
   const date = new Date(year, month - 1, day);
-  return date.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  return date.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
 }
 
 function handleStartDateChange() {
@@ -85,7 +86,7 @@ function handleStartDateChange() {
   startDateInput.value = monday;
 
   if (monday !== pickedDate) {
-    dateNotice.textContent = `Adjusted to ${formatReadable(monday)} — the Monday of that week.`;
+    dateNotice.textContent = `Week 1 will start ${formatReadable(monday)} (moved from your selected date).`;
     dateNotice.hidden = false;
   } else {
     dateNotice.hidden = true;
@@ -116,7 +117,7 @@ function renderStep() {
   });
 
   backBtn.disabled = state.stepIndex === 0;
-  nextBtn.textContent = state.stepIndex === STEPS.length - 1 ? 'Done' : 'Next';
+  nextBtn.textContent = state.stepIndex === STEPS.length - 1 ? 'Done' : 'Continue';
   nextBtn.disabled = state.stepIndex === STEPS.length - 1;
 }
 
@@ -133,7 +134,11 @@ function getUploadElements(key) {
   return {
     dropzone,
     fileInput: dropzone.querySelector('.file-input'),
+    promptEl: dropzone.querySelector('.dropzone-text'),
+    checkEl: dropzone.querySelector('.dropzone-check'),
     filenameEl: dropzone.querySelector('.dropzone-filename'),
+    metaEl: dropzone.querySelector('.dropzone-meta'),
+    replaceEl: dropzone.querySelector('.dropzone-replace'),
     resultEl: card.querySelector('.upload-result'),
   };
 }
@@ -144,11 +149,19 @@ function escapeHtml(value) {
   return div.innerHTML;
 }
 
-function renderIssueList(label, issues) {
+/**
+ * Validation output per DESIGN.md §3.5: a tinted bordered list inside the
+ * file's card, one line per issue, row numbers in mono.
+ */
+function renderIssueList(label, issues, kind) {
   const items = issues
-    .map((issue) => `<li>${issue.row ? `Row ${issue.row}: ` : ''}${escapeHtml(issue.message)}</li>`)
+    .map((issue) => {
+      const rowPrefix = issue.row ? `<span class="issue-row">Row ${issue.row}</span> — ` : '';
+      return `<li>${rowPrefix}${escapeHtml(issue.message)}</li>`;
+    })
     .join('');
-  return `<div class="issue-group"><strong>${label}</strong><ul>${items}</ul></div>`;
+  const groupClass = kind === 'warning' ? 'issue-group issue-group-warning' : 'issue-group';
+  return `<div class="${groupClass}"><div class="issue-group-title">${label}</div><ul class="issue-list">${items}</ul></div>`;
 }
 
 /**
@@ -172,23 +185,38 @@ function computeDisplayResult(key) {
 }
 
 function renderUploadResult(key) {
-  const { filenameEl, resultEl } = getUploadElements(key);
+  const { dropzone, promptEl, checkEl, filenameEl, metaEl, replaceEl, resultEl } = getUploadElements(key);
   const upload = state.uploads[key];
 
   if (!upload) {
+    dropzone.classList.remove('dropzone-loaded');
+    promptEl.hidden = false;
+    checkEl.hidden = true;
     filenameEl.hidden = true;
     filenameEl.textContent = '';
+    metaEl.hidden = true;
+    metaEl.textContent = '';
+    replaceEl.hidden = true;
     resultEl.hidden = true;
     resultEl.innerHTML = '';
     resultEl.classList.remove('upload-result-success', 'upload-result-error');
     return;
   }
 
-  filenameEl.hidden = false;
-  filenameEl.textContent = upload.fileName;
-
   const display = computeDisplayResult(key);
   const hasErrors = display.errors.length > 0;
+  const rowCount = display.rows.length;
+
+  // On success the drop zone collapses to a compact row (§3.4); with errors
+  // it stays open so the file can be replaced straight away.
+  dropzone.classList.toggle('dropzone-loaded', !hasErrors);
+  promptEl.hidden = !hasErrors;
+  checkEl.hidden = hasErrors;
+  replaceEl.hidden = hasErrors;
+  filenameEl.hidden = hasErrors;
+  filenameEl.textContent = upload.fileName;
+  metaEl.hidden = hasErrors;
+  metaEl.textContent = `${rowCount} row${rowCount === 1 ? '' : 's'}`;
 
   resultEl.hidden = false;
   resultEl.classList.toggle('upload-result-error', hasErrors);
@@ -197,13 +225,16 @@ function renderUploadResult(key) {
   const parts = [];
   if (hasErrors) {
     const count = display.errors.length;
-    parts.push(`<p class="upload-result-summary">${count} error${count === 1 ? '' : 's'} found — fix and re-upload.</p>`);
-    parts.push(renderIssueList('Errors', display.errors));
-    if (display.warnings.length > 0) parts.push(renderIssueList('Warnings', display.warnings));
+    parts.push(
+      `<p class="upload-result-summary"><span class="mono-500">${count}</span> error${count === 1 ? '' : 's'} to fix. Correct these rows and upload the file again.</p>`
+    );
+    parts.push(renderIssueList('Errors', display.errors, 'error'));
+    if (display.warnings.length > 0) parts.push(renderIssueList('Warnings', display.warnings, 'warning'));
   } else {
-    const count = display.rows.length;
-    parts.push(`<p class="upload-result-summary">${count} row${count === 1 ? '' : 's'} parsed successfully.</p>`);
-    if (display.warnings.length > 0) parts.push(renderIssueList('Warnings', display.warnings));
+    parts.push(
+      `<p class="upload-result-summary"><span class="mono-500">${rowCount}</span> row${rowCount === 1 ? '' : 's'} read. <span class="chip chip-ok">Ready</span></p>`
+    );
+    if (display.warnings.length > 0) parts.push(renderIssueList('Warnings', display.warnings, 'warning'));
   }
   resultEl.innerHTML = parts.join('');
 }
@@ -356,19 +387,16 @@ function computeEngineState() {
   };
 }
 
-/** SPEC.md §11.1 term structure — Block N = weeks; weeks 4/8/12 excluded. */
-function renderTermRibbon() {
-  const block = (n, weeks) =>
-    `<div class="blockgroup g${n}"><span>Block ${n}</span><div class="weeks">${weeks
-      .map((w) => `<div class="wk">${w}</div>`)
-      .join('')}</div></div>`;
-  const dead = (n) =>
-    `<div class="blockgroup"><span>&nbsp;</span><div class="weeks"><div class="wk dead" title="No meetings — excluded week">${n}</div></div></div>`;
-
-  return `<div class="ribbon" aria-label="Term structure">${block(1, [1, 2, 3])}${dead(4)}${block(2, [5, 6, 7])}${dead(8)}${block(3, [9, 10, 11])}${dead(12)}${block(4, [13, 14, 15])}</div>`;
-}
-
 function renderFteAndCapacityTable(eng) {
+  if (eng.coaches.length === 0) {
+    return `
+    <div class="card">
+      <h2>Coach capacity</h2>
+      <p class="help-text">FTE changes recalculate quotas immediately.</p>
+      <div class="table-wrap"><p class="table-empty">No coaches found in the availability file.</p></div>
+    </div>`;
+  }
+
   const rows = eng.coaches
     .map(
       (c) => `
@@ -376,29 +404,27 @@ function renderFteAndCapacityTable(eng) {
       <td>${escapeHtml(c)}</td>
       <td class="mono num">${eng.slotCounts[c] || 0}</td>
       <td class="mono num">${eng.capacity[c] || 0}</td>
-      <td><input type="number" class="fte-input" data-coach="${escapeHtml(c)}" min="0.05" max="1.00" step="0.05" value="${eng.fte[c].toFixed(2)}" aria-label="FTE for ${escapeHtml(c)}" /></td>
-      <td class="mono5 num">${eng.quotas[c] || 0}</td>
+      <td><input type="number" class="fte" data-coach="${escapeHtml(c)}" min="0.05" max="1.00" step="0.05" value="${eng.fte[c].toFixed(2)}" aria-label="FTE for ${escapeHtml(c)}" /></td>
+      <td class="mono-500 num">${eng.quotas[c] || 0}</td>
     </tr>`
     )
     .join('');
 
   return `
-    <div class="rcard">
-      <div class="rcard-header">
-        <h3>Coach capacity</h3>
-        <p class="rcard-desc">FTE changes recalculate quotas immediately.</p>
-      </div>
-      <div class="table-scroll">
+    <div class="card">
+      <h2>Coach capacity</h2>
+      <p class="help-text">FTE changes recalculate quotas immediately.</p>
+      <div class="table-wrap">
         <table>
           <thead><tr><th>Coach</th><th class="num">Valid slots</th><th class="num">Capacity</th><th>FTE</th><th class="num">Quota</th></tr></thead>
-          <tbody>${rows || `<tr><td colspan="5" class="rcard-empty">No coaches found in the availability file.</td></tr>`}</tbody>
+          <tbody>${rows}</tbody>
         </table>
       </div>
     </div>`;
 }
 
 function attachFteInputHandlers() {
-  document.querySelectorAll('#review-content .fte-input').forEach((input) => {
+  document.querySelectorAll('#review-content input.fte').forEach((input) => {
     input.addEventListener('change', () => {
       const coach = input.dataset.coach;
       let value = Number(input.value);
@@ -437,13 +463,24 @@ function computeRequestedPairings(eng) {
 }
 
 function renderPairingsCoverage(eng) {
+  if (eng.coaches.length === 0) {
+    return `
+    <div class="card">
+      <h2>Pairings coverage</h2>
+      <div class="table-wrap"><p class="table-empty">No coaches found in the availability file.</p></div>
+    </div>`;
+  }
+
   const requested = computeRequestedPairings(eng);
 
   const rows = eng.coaches
     .map((c) => {
       const req = requested[c] || 0;
       const capacity = eng.capacity[c] || 0;
-      const statusChip = req > capacity ? `<span class="chip exc">Over capacity by ${req - capacity}</span>` : `<span class="chip ok">OK</span>`;
+      const statusChip =
+        req > capacity
+          ? `<span class="chip chip-exception">Over capacity by ${req - capacity}</span>`
+          : `<span class="chip chip-ok">OK</span>`;
       return `
     <tr>
       <td>${escapeHtml(c)}</td>
@@ -470,15 +507,13 @@ function renderPairingsCoverage(eng) {
   if (overCapacity) summaryBits.push(`${overCapacity} exceed their coach's capacity`);
 
   return `
-    <div class="rcard">
-      <div class="rcard-header">
-        <h3>Pairings coverage</h3>
-        <p class="rcard-desc">${summaryBits.join(' · ')}</p>
-      </div>
-      <div class="table-scroll">
+    <div class="card">
+      <h2>Pairings coverage</h2>
+      <p class="help-text">${summaryBits.join(' · ')}</p>
+      <div class="table-wrap">
         <table>
           <thead><tr><th>Coach</th><th class="num">Valid slots</th><th class="num">Capacity</th><th class="num">Paired students</th><th>Status</th></tr></thead>
-          <tbody>${rows || `<tr><td colspan="5" class="rcard-empty">No coaches found in the availability file.</td></tr>`}</tbody>
+          <tbody>${rows}</tbody>
         </table>
       </div>
     </div>`;
@@ -486,14 +521,15 @@ function renderPairingsCoverage(eng) {
 
 function renderReview() {
   const container = document.getElementById('review-content');
-  const parts = [renderTermRibbon()];
+  const parts = [];
 
   if (!hasCoreUploads()) {
     const need =
       state.mode === 'pre-allocated'
         ? 'the class schedule, coach availability, student list, and pairings files'
         : 'the class schedule, coach availability, and student list files';
-    parts.push(`<div class="rcard"><p class="rcard-empty">Upload ${need} to see capacity.</p></div>`);
+    const heading = state.mode === 'pre-allocated' ? 'Pairings coverage' : 'Coach capacity';
+    parts.push(`<div class="card"><h2>${heading}</h2><div class="table-wrap"><p class="table-empty">Upload ${need} to see capacity.</p></div></div>`);
     container.innerHTML = parts.join('');
     return;
   }
@@ -509,7 +545,7 @@ function renderReview() {
 
   if (state.mode === 'pre-allocated') {
     if (!state.uploads.pairings) {
-      parts.push(`<div class="rcard"><p class="rcard-empty">Upload the pairings file to see coverage.</p></div>`);
+      parts.push(`<div class="card"><h2>Pairings coverage</h2><div class="table-wrap"><p class="table-empty">Upload the pairings file to see coverage.</p></div></div>`);
     } else {
       parts.push(renderPairingsCoverage(eng));
     }
@@ -523,6 +559,14 @@ function renderReview() {
 }
 
 function renderUtilisationTable(eng) {
+  if (eng.coaches.length === 0) {
+    return `
+    <div class="card">
+      <h2>Coach utilisation</h2>
+      <div class="table-wrap"><p class="table-empty">No coaches found in the availability file.</p></div>
+    </div>`;
+  }
+
   const rows = eng.coaches
     .map((c) => {
       const capacity = eng.capacity[c] || 0;
@@ -533,18 +577,18 @@ function renderUtilisationTable(eng) {
       <td>${escapeHtml(c)}</td>
       <td class="mono num">${capacity}</td>
       <td class="mono num">${scheduled}</td>
-      <td class="mono5 num">${pct}%</td>
+      <td class="mono-500 num">${pct}%</td>
     </tr>`;
     })
     .join('');
 
   return `
-    <div class="rcard">
-      <div class="rcard-header"><h3>Coach utilisation</h3></div>
-      <div class="table-scroll">
+    <div class="card">
+      <h2>Coach utilisation</h2>
+      <div class="table-wrap">
         <table>
           <thead><tr><th>Coach</th><th class="num">Capacity</th><th class="num">Scheduled</th><th class="num">Utilisation</th></tr></thead>
-          <tbody>${rows || `<tr><td colspan="4" class="rcard-empty">No coaches found in the availability file.</td></tr>`}</tbody>
+          <tbody>${rows}</tbody>
         </table>
       </div>
     </div>`;
@@ -552,7 +596,11 @@ function renderUtilisationTable(eng) {
 
 function renderUnassignedTable(eng) {
   if (eng.unassigned.length === 0) {
-    return `<div class="rcard"><div class="rcard-header"><h3>Unassigned students</h3></div><p class="rcard-empty">All students were scheduled.</p></div>`;
+    return `
+    <div class="card">
+      <h2>Unassigned students</h2>
+      <div class="table-wrap"><p class="table-empty">All students were scheduled.</p></div>
+    </div>`;
   }
 
   const rows = eng.unassigned
@@ -560,18 +608,16 @@ function renderUnassignedTable(eng) {
       ({ student, reason }) => `
     <tr>
       <td>${escapeHtml(student.studentName)} <span class="mono">${escapeHtml(student.contactSfId)}</span></td>
-      <td><span class="chip exc">${escapeHtml(capitalize(reason))}</span></td>
+      <td><span class="chip chip-exception">${escapeHtml(capitalize(reason))}</span></td>
     </tr>`
     )
     .join('');
 
   return `
-    <div class="rcard">
-      <div class="rcard-header">
-        <h3>Unassigned students</h3>
-        <p class="rcard-desc">${eng.unassigned.length} student${eng.unassigned.length === 1 ? '' : 's'} could not be scheduled.</p>
-      </div>
-      <div class="table-scroll">
+    <div class="card">
+      <h2>Unassigned students</h2>
+      <p class="help-text">${eng.unassigned.length} student${eng.unassigned.length === 1 ? '' : 's'} could not be scheduled.</p>
+      <div class="table-wrap">
         <table>
           <thead><tr><th>Student</th><th>Reason</th></tr></thead>
           <tbody>${rows}</tbody>
@@ -581,12 +627,15 @@ function renderUnassignedTable(eng) {
 }
 
 function renderAppointmentsPreview(eng) {
-  const preview = eng.appointments.slice(0, 50);
-
-  if (preview.length === 0) {
-    return `<div class="rcard"><div class="rcard-header"><h3>Appointments</h3></div><p class="rcard-empty">No appointments were scheduled.</p></div>`;
+  if (eng.appointments.length === 0) {
+    return `
+    <div class="card">
+      <h2>Appointments</h2>
+      <div class="table-wrap"><p class="table-empty">No appointments were scheduled.</p></div>
+    </div>`;
   }
 
+  const preview = eng.appointments.slice(0, 50);
   const rows = preview
     .map(
       (a) => `
@@ -607,12 +656,10 @@ function renderAppointmentsPreview(eng) {
       : `${eng.appointments.length} appointment${eng.appointments.length === 1 ? '' : 's'}.`;
 
   return `
-    <div class="rcard">
-      <div class="rcard-header">
-        <h3>Appointments</h3>
-        <p class="rcard-desc">${note}</p>
-      </div>
-      <div class="table-scroll table-scroll-tall">
+    <div class="card">
+      <h2>Appointments</h2>
+      <p class="help-text">${note}</p>
+      <div class="table-wrap">
         <table>
           <thead><tr><th>Date</th><th>Time</th><th>Student</th><th>Coach</th><th class="num">Week</th><th class="num">Meeting</th></tr></thead>
           <tbody>${rows}</tbody>
@@ -623,22 +670,21 @@ function renderAppointmentsPreview(eng) {
 
 function renderResults() {
   const container = document.getElementById('results-content');
+  const sub = document.getElementById('results-sub');
 
   if (!hasResultsInputs()) {
-    container.innerHTML = `<div class="rcard"><p class="rcard-empty">Complete setup and upload to see results.</p></div>`;
+    sub.textContent = 'The schedule, exceptions, and export appear here.';
+    container.innerHTML = `<div class="card"><div class="table-wrap"><p class="table-empty">Complete setup and upload to see results.</p></div></div>`;
     return;
   }
 
   const eng = computeEngineState();
   const scheduledCount = eng.assignments.length;
-  const unassignedChip = eng.unassigned.length > 0 ? ` · <span class="chip exc">${eng.unassigned.length} unassigned</span>` : '';
+  const unassignedChip = eng.unassigned.length > 0 ? ` · <span class="chip chip-exception">${eng.unassigned.length} unassigned</span>` : '';
 
-  const parts = [
-    `<p class="summaryline"><span class="mono5">${scheduledCount}</span> of <span class="mono5">${eng.studentCount}</span> students scheduled · <span class="mono5">${eng.appointments.length}</span> appointments${unassignedChip}</p>`,
-    renderUtilisationTable(eng),
-    renderUnassignedTable(eng),
-    renderAppointmentsPreview(eng),
-  ];
+  sub.innerHTML = `<span class="mono-500">${scheduledCount}</span> of <span class="mono-500">${eng.studentCount}</span> students scheduled · <span class="mono-500">${eng.appointments.length}</span> appointments${unassignedChip}`;
+
+  const parts = [renderUtilisationTable(eng), renderUnassignedTable(eng), renderAppointmentsPreview(eng)];
 
   container.innerHTML = parts.join('');
 }
@@ -675,6 +721,11 @@ function init() {
   stepperItems.forEach((item) => {
     item.addEventListener('click', () => goToStep(STEPS.indexOf(item.dataset.step)));
     item.style.cursor = 'pointer';
+  });
+
+  // Display-only term ribbon (DESIGN.md §3.1) on Review and Results.
+  document.querySelectorAll('.ribbon-mount').forEach((mount) => {
+    renderTermRibbon(mount, { label: 'Term structure' });
   });
 
   UPLOAD_KEYS.forEach(setupUpload);

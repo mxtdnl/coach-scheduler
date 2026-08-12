@@ -1,346 +1,18 @@
-:root {
-  --color-bg: #f5f6f8;
-  --color-surface: #ffffff;
-  --color-border: #d9dce1;
-  --color-text: #1f2430;
-  --color-text-muted: #5b6270;
-  --color-primary: #2456c7;
-  --color-primary-hover: #1c46a6;
-  --color-notice-bg: #fff4d6;
-  --color-notice-border: #e8c568;
-  --color-notice-text: #7a5b00;
-  --radius: 6px;
-  --spacing: 16px;
-}
+/* Term Scheduler visual system — see DESIGN.md (normative) and mockup.html.
+   Tokens (§1) → layout (§2) → components (§3) → responsive/quality floor (§5). */
 
-* {
-  box-sizing: border-box;
-}
-
-body {
-  margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  background: var(--color-bg);
-  color: var(--color-text);
-  line-height: 1.5;
-}
-
-h1, h2, h3 {
-  margin: 0 0 4px;
-  font-weight: 600;
-}
-
-.app-header {
-  padding: 24px var(--spacing) 8px;
-  max-width: 720px;
-  margin: 0 auto;
-}
-
-.app-subtitle {
-  margin: 0;
-  color: var(--color-text-muted);
-}
-
-/* Stepper */
-
-.stepper {
-  max-width: 720px;
-  margin: 24px auto 0;
-  padding: 0 var(--spacing);
-}
-
-#stepper-list {
-  display: flex;
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  gap: 8px;
-}
-
-.stepper-item {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 12px;
-  border-radius: var(--radius);
-  border: 1px solid var(--color-border);
-  background: var(--color-surface);
-  color: var(--color-text-muted);
-  font-size: 0.9rem;
-}
-
-.stepper-index {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  background: var(--color-border);
-  color: var(--color-surface);
-  font-size: 0.8rem;
-  font-weight: 600;
-  flex-shrink: 0;
-}
-
-.stepper-item.active {
-  border-color: var(--color-primary);
-  color: var(--color-text);
-}
-
-.stepper-item.active .stepper-index {
-  background: var(--color-primary);
-}
-
-.stepper-item.completed .stepper-index {
-  background: var(--color-primary-hover);
-}
-
-/* Main content */
-
-.app-main {
-  max-width: 720px;
-  margin: 24px auto 96px;
-  padding: 0 var(--spacing);
-}
-
-.step-panel h2 {
-  margin-bottom: 16px;
-}
-
-.card {
-  background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
-  padding: 20px;
-  margin-bottom: 16px;
-}
-
-.card h3 {
-  margin-bottom: 4px;
-}
-
-.help-text {
-  color: var(--color-text-muted);
-  font-size: 0.9rem;
-  margin: 4px 0 12px;
-}
-
-/* Fields */
-
-.field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  max-width: 260px;
-  font-size: 0.9rem;
-}
-
-.field input[type="date"] {
-  padding: 8px 10px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
-  font-size: 1rem;
-}
-
-.notice {
-  margin: 12px 0 0;
-  padding: 10px 12px;
-  border-radius: var(--radius);
-  font-size: 0.9rem;
-}
-
-.notice-info {
-  background: var(--color-notice-bg);
-  border: 1px solid var(--color-notice-border);
-  color: var(--color-notice-text);
-}
-
-/* Mode toggle */
-
-.toggle-group {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.toggle-option {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
-  padding: 12px;
-  cursor: pointer;
-}
-
-.toggle-option:has(input:checked) {
-  border-color: var(--color-primary);
-  background: #eef2fc;
-}
-
-.toggle-option input {
-  margin-top: 3px;
-}
-
-.toggle-option small {
-  display: block;
-  color: var(--color-text-muted);
-  font-weight: normal;
-}
-
-/* Templates */
-
-.template-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.template-list a {
-  color: var(--color-primary);
-  text-decoration: none;
-  font-size: 0.95rem;
-}
-
-.template-list a:hover {
-  text-decoration: underline;
-}
-
-/* Uploads */
-
-.upload-toolbar {
-  display: flex;
-  justify-content: flex-end;
-  margin-bottom: 12px;
-}
-
-.dropzone {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  padding: 24px 16px;
-  border: 2px dashed var(--color-border);
-  border-radius: var(--radius);
-  cursor: pointer;
-  text-align: center;
-  color: var(--color-text-muted);
-  font-size: 0.9rem;
-}
-
-.dropzone:hover,
-.dropzone.dropzone-active {
-  border-color: var(--color-primary);
-  background: #eef2fc;
-}
-
-.dropzone-filename {
-  font-weight: 600;
-  color: var(--color-text);
-}
-
-.upload-result {
-  margin-top: 12px;
-  padding: 12px 14px;
-  border-radius: var(--radius);
-  font-size: 0.9rem;
-}
-
-.upload-result-success {
-  background: #e9f7ee;
-  border: 1px solid #a8dbb8;
-  color: #1e6b38;
-}
-
-.upload-result-error {
-  background: #fdecec;
-  border: 1px solid #f0b4b4;
-  color: #8a2222;
-}
-
-.upload-result-summary {
-  margin: 0 0 8px;
-  font-weight: 600;
-}
-
-.issue-group {
-  margin-top: 8px;
-}
-
-.issue-group:first-child {
-  margin-top: 0;
-}
-
-.issue-group ul {
-  margin: 4px 0 0;
-  padding-left: 20px;
-}
-
-.issue-group li {
-  margin-bottom: 4px;
-}
-
-/* Footer nav */
-
-.app-footer {
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  background: var(--color-surface);
-  border-top: 1px solid var(--color-border);
-  padding: 12px var(--spacing);
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
-.btn {
-  padding: 9px 18px;
-  border-radius: var(--radius);
-  border: 1px solid var(--color-border);
-  background: var(--color-surface);
-  color: var(--color-text);
-  font-size: 0.95rem;
-  cursor: pointer;
-}
-
-.btn:hover {
-  background: var(--color-bg);
-}
-
-.btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.btn-primary {
-  background: var(--color-primary);
-  border-color: var(--color-primary);
-  color: #fff;
-}
-
-.btn-primary:hover:not(:disabled) {
-  background: var(--color-primary-hover);
-}
-
-/* ==========================================================================
-   DESIGN.md v1 — Review & Results step components.
-   Scoped to these two steps (via .rcard / .ribbon / .chip / .banner) so the
-   Setup and Upload steps above are untouched, per DESIGN.md §1/§3.
-   ========================================================================== */
+/* ---------- §1 Tokens ---------- */
 
 :root {
+  /* Colour */
   --paper: #F4F5F2;
   --surface: #FFFFFF;
   --ink: #20242C;
   --ink-2: #626A76;
+  /* Darkened --ink-2, used only on --dead fills where --ink-2 falls to 4.3:1 (§1 requires darkening). */
+  --ink-3: #545B66;
   --line: #E1E2DA;
+  --line-50: rgb(225 226 218 / 50%);
   --action: #1D5C57;
   --ok-tint: #DCEBE7;
   --b1: #D8E4F0;
@@ -356,116 +28,207 @@ h1, h2, h3 {
   --err: #9E3B36;
   --err-tint: #F3DBDA;
   --dead: #ECEDE7;
-  --font-ui: "Schibsted Grotesk", sans-serif;
-  --font-mono: "Spline Sans Mono", monospace;
+
+  /* Type */
+  --ui: "Schibsted Grotesk", system-ui, sans-serif;
+  --mono: "Spline Sans Mono", ui-monospace, monospace;
+
+  /* Shape */
+  --radius-control: 6px;
+  --radius-card: 10px;
+  --shadow-card: 0 1px 2px rgb(32 36 44 / 6%);
+  --rail-width: 240px;
 }
 
-/* Cards — DESIGN.md §3.2 */
-.rcard {
+* {
+  box-sizing: border-box;
+}
+
+/* ---------- §2 Layout ---------- */
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 400 14px/22px var(--ui);
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, p, ol, ul {
+  margin: 0;
+}
+
+a {
+  color: var(--action);
+}
+
+a:hover {
+  text-decoration: none;
+}
+
+.app {
+  display: flex;
+  align-items: stretch;
+  min-height: 100vh;
+}
+
+.rail {
+  width: var(--rail-width);
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  padding: 24px 0;
   background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 24px;
-  margin-bottom: 20px;
-  box-shadow: 0 1px 2px rgb(32 36 44 / 6%);
-  font-family: var(--font-ui);
-  color: var(--ink);
+  border-right: 1px solid var(--line);
 }
 
-.rcard-header {
-  margin-bottom: 16px;
+.wordmark {
+  font: 700 17px/24px var(--ui);
+  padding: 0 24px 24px;
 }
 
-.rcard h3 {
-  font: 700 17px/24px var(--font-ui);
-  margin: 0 0 4px;
-  color: var(--ink);
+.rail-steps {
+  list-style: none;
+  padding: 0;
 }
 
-.rcard-desc {
+.stepper-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 24px;
+  border: 0;
+  border-left: 3px solid transparent;
+  background: none;
   color: var(--ink-2);
-  margin: 0;
-  font-size: 14px;
-  line-height: 20px;
+  font: 400 14px/22px var(--ui);
+  text-align: left;
+  cursor: pointer;
 }
 
-.rcard-empty {
+.stepper-index {
+  flex: none;
+  width: 14px;
   text-align: center;
-  color: var(--ink-2);
-  padding: 12px 0;
-  margin: 0;
+  font: 500 13px/18px var(--mono);
 }
 
-/* Term ribbon — DESIGN.md §3.1 (signature element, basis for the future §11
-   blocking grid). Display-only context on Review. */
+.stepper-item.completed {
+  color: var(--ink-2);
+}
+
+/* Done steps show a check in --action; the index keeps its box so nothing shifts. */
+.stepper-item.completed .stepper-index {
+  color: transparent;
+  position: relative;
+}
+
+.stepper-item.completed .stepper-index::after {
+  content: "\2713";
+  position: absolute;
+  inset: 0;
+  color: var(--action);
+}
+
+.stepper-item.active {
+  border-left-color: var(--action);
+  color: var(--ink);
+  font-weight: 700;
+}
+
+.rail-note {
+  margin-top: auto;
+  padding: 16px 24px 0;
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--ink-2);
+}
+
+.app-main {
+  flex: 1;
+  min-width: 0;
+  max-width: 1080px;
+  padding: 32px 32px 104px;
+}
+
+.page-title {
+  font: 700 26px/32px var(--ui);
+  letter-spacing: -0.01em;
+}
+
+.page-sub {
+  color: var(--ink-2);
+  margin: 4px 0 24px;
+}
+
+/* ---------- §3.1 Term ribbon ---------- */
+
 .ribbon {
   display: flex;
   gap: 8px;
   align-items: flex-end;
-  margin: 0 0 20px;
-  flex-wrap: wrap;
+  margin: 0 0 28px;
 }
 
-.blockgroup {
+.ribbon-group {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 
-.blockgroup > span {
-  font: 500 11px/14px var(--font-ui);
+.ribbon-label {
+  font: 500 11px/14px var(--ui);
   color: var(--ink-2);
 }
 
-.g1 > span { color: var(--b1-deep); }
-.g2 > span { color: var(--b2-deep); }
-.g3 > span { color: var(--b3-deep); }
-.g4 > span { color: var(--b4-deep); }
-
-.g1 .wk:not(.dead):not(.blocked) { background: var(--b1); color: var(--b1-deep); }
-.g2 .wk:not(.dead):not(.blocked) { background: var(--b2); color: var(--b2-deep); }
-.g3 .wk:not(.dead):not(.blocked) { background: var(--b3); color: var(--b3-deep); }
-.g4 .wk:not(.dead):not(.blocked) { background: var(--b4); color: var(--b4-deep); }
-
-.weeks {
+.ribbon-weeks {
   display: flex;
   gap: 4px;
 }
 
 .wk {
   width: 40px;
-  min-width: 40px;
   height: 40px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--surface);
   display: flex;
   align-items: center;
   justify-content: center;
-  font: 500 13px/18px var(--font-mono);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  font: 500 13px/18px var(--mono);
 }
 
-.wk.dead {
+.ribbon-group-b1 .ribbon-label { color: var(--b1-deep); }
+.ribbon-group-b2 .ribbon-label { color: var(--b2-deep); }
+.ribbon-group-b3 .ribbon-label { color: var(--b3-deep); }
+.ribbon-group-b4 .ribbon-label { color: var(--b4-deep); }
+
+.ribbon-group-b1 .wk:not(.wk-dead):not(.wk-blocked) { background: var(--b1); color: var(--b1-deep); }
+.ribbon-group-b2 .wk:not(.wk-dead):not(.wk-blocked) { background: var(--b2); color: var(--b2-deep); }
+.ribbon-group-b3 .wk:not(.wk-dead):not(.wk-blocked) { background: var(--b3); color: var(--b3-deep); }
+.ribbon-group-b4 .wk:not(.wk-dead):not(.wk-blocked) { background: var(--b4); color: var(--b4-deep); }
+
+.wk-dead {
   width: 28px;
-  min-width: 28px;
-  background: var(--dead);
-  color: var(--ink-2);
-  text-decoration: line-through;
+  background-color: var(--dead);
   background-image: repeating-linear-gradient(45deg, transparent 0 4px, rgb(225 226 218 / 55%) 4px 6px);
-}
-
-.wk.blocked {
-  background: var(--err-tint) !important;
-  border-color: var(--err);
-  color: var(--err) !important;
+  color: var(--ink-3);
   text-decoration: line-through;
 }
 
-.wk.warn {
+.wk-blocked {
+  background: var(--err-tint);
+  border-color: var(--err);
+  color: var(--err);
+  text-decoration: line-through;
+}
+
+.wk-exceptions {
   position: relative;
 }
 
-.wk.warn::after {
+.wk-exceptions::after {
   content: "";
   position: absolute;
   top: 4px;
@@ -476,106 +239,521 @@ h1, h2, h3 {
   background: var(--warn);
 }
 
-/* Warning banner — DESIGN.md §1 (apricot warn tokens) */
-.banner {
-  border: 1px solid var(--warn);
-  background: var(--warn-tint);
-  color: var(--warn);
-  border-radius: 6px;
-  padding: 10px 14px;
+/* Interactive grid (§3.6): hover raises the border to the block's deep tone. */
+button.wk {
+  cursor: pointer;
+  padding: 0;
+}
+
+.ribbon-group-b1 button.wk:hover { border-color: var(--b1-deep); }
+.ribbon-group-b2 button.wk:hover { border-color: var(--b2-deep); }
+.ribbon-group-b3 button.wk:hover { border-color: var(--b3-deep); }
+.ribbon-group-b4 button.wk:hover { border-color: var(--b4-deep); }
+
+/* ---------- §3.2 Cards ---------- */
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  padding: 24px;
+  margin-bottom: 20px;
+  box-shadow: var(--shadow-card);
+}
+
+.card h2,
+.card h3 {
+  font: 700 17px/24px var(--ui);
+}
+
+.help-text {
+  color: var(--ink-2);
+  margin: 4px 0 16px;
+}
+
+.card > .help-text:last-child {
+  margin-bottom: 0;
+}
+
+.section-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
   margin-bottom: 16px;
-  font: 400 14px/20px var(--font-ui);
 }
 
-/* Status chips — DESIGN.md §3.5 */
-.chip {
-  display: inline-block;
-  font: 500 12px/16px var(--font-ui);
-  padding: 3px 8px;
-  border-radius: 6px;
-  white-space: nowrap;
-}
+/* ---------- §3.3 Tables ---------- */
 
-.chip.ok { background: var(--ok-tint); color: var(--action); }
-.chip.warn { background: var(--warn-tint); color: var(--warn); }
-.chip.exc { background: var(--err-tint); color: var(--err); }
-
-/* Tables — DESIGN.md §3.3 */
-.table-scroll {
-  overflow-x: auto;
-}
-
-.table-scroll-tall {
-  max-height: 480px;
-  overflow-y: auto;
-}
-
-.rcard table {
+table {
   width: 100%;
   border-collapse: collapse;
-  font-family: var(--font-ui);
 }
 
-.rcard thead th {
-  font: 500 13px/18px var(--font-ui);
+th {
+  font: 500 13px/18px var(--ui);
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--ink-2);
   text-align: left;
   padding: 0 12px 10px;
   border-bottom: 1px solid var(--line);
-  position: sticky;
-  top: 0;
-  background: var(--surface);
 }
 
-.rcard td {
+td {
   padding: 11px 12px;
-  border-bottom: 1px solid rgb(221 225 219 / 50%);
   height: 44px;
-  color: var(--ink);
+  border-bottom: 1px solid var(--line-50);
 }
 
-.rcard tbody tr:last-child td {
+tr:last-child td {
   border-bottom: 0;
 }
 
-.rcard .mono { font: 400 13px/18px var(--font-mono); }
-.rcard .mono5 { font: 500 13px/18px var(--font-mono); }
-.rcard .num { text-align: right; }
+/* Sticky header for scrolling tables; min-height reserves the space so
+   loading data does not shift the page (§5). */
+.table-wrap {
+  overflow: auto;
+  max-height: 480px;
+  min-height: 176px;
+}
 
-/* FTE input — DESIGN.md §3.4 */
-.fte-input {
-  width: 72px;
-  height: 36px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  font: 400 13px/18px var(--font-mono);
-  padding: 0 10px;
+.table-wrap thead th {
+  position: sticky;
+  top: 0;
   background: var(--surface);
+  z-index: 1;
+}
+
+.table-empty {
+  color: var(--ink-2);
+  text-align: center;
+  padding: 24px 12px;
+}
+
+.mono {
+  font: 400 13px/18px var(--mono);
+}
+
+.mono-500 {
+  font: 500 13px/18px var(--mono);
+}
+
+.num {
+  text-align: right;
+}
+
+/* ---------- §3.4 Controls ---------- */
+
+.btn {
+  font: 500 14px/20px var(--ui);
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  padding: 10px 16px;
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.btn-primary {
+  background: var(--action);
+  color: #fff;
+}
+
+.btn-secondary {
+  border-color: var(--line);
   color: var(--ink);
 }
 
-.fte-input:focus-visible {
-  outline: 2px solid var(--action);
-  outline-offset: 2px;
+.btn-destructive {
+  border-color: var(--line);
+  color: var(--err);
+}
+
+.btn-secondary:hover:not(:disabled),
+.btn-destructive:hover:not(:disabled) {
+  background: var(--paper);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 260px;
+}
+
+.field > span,
+label.field-label {
+  font: 500 13px/18px var(--ui);
+  color: var(--ink-2);
+}
+
+input[type="date"],
+input[type="text"],
+select {
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  color: var(--ink);
+  font: 400 13px/18px var(--mono);
+}
+
+input.fte {
+  width: 72px;
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  font: 400 13px/18px var(--mono);
+}
+
+input:focus {
   border-color: var(--action);
 }
 
-/* Results summary line — DESIGN.md §4 ("counts are sentences, not dashboards") */
-.summaryline {
-  font: 400 14px/22px var(--font-ui);
+/* Mode toggle: two peer segments, never a switch (§3.4). */
+.toggle-group {
+  display: flex;
+  gap: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  overflow: hidden;
+  max-width: 560px;
+}
+
+.toggle-option {
+  flex: 1;
+  display: block;
+  padding: 12px 16px;
+  background: var(--surface);
   color: var(--ink);
+  cursor: pointer;
+}
+
+.toggle-option + .toggle-option {
+  border-left: 1px solid var(--line);
+}
+
+.toggle-option input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.toggle-option strong {
+  font-weight: 500;
+}
+
+.toggle-option small {
+  display: block;
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 17px;
+  color: var(--ink-2);
+}
+
+.toggle-option:has(input:checked) {
+  background: var(--b1);
+  color: var(--action);
+}
+
+.toggle-option:has(input:checked) strong {
+  font-weight: 700;
+}
+
+.toggle-option:has(input:focus-visible) {
+  outline: 2px solid var(--action);
+  outline-offset: -2px;
+}
+
+/* Templates */
+.template-list {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* File drop zones (§3.4) */
+.upload-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
+
+.dropzone {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  height: 96px;
+  padding: 12px 16px;
+  border: 1.5px dashed var(--line);
+  border-radius: var(--radius-control);
+  color: var(--ink-2);
+  text-align: center;
+  cursor: pointer;
+}
+
+.dropzone:hover,
+.dropzone-active {
+  border-color: var(--action);
+  color: var(--action);
+}
+
+/* On success the zone collapses to a compact row (§3.4). */
+.dropzone-loaded {
+  height: 44px;
+  border-style: solid;
+  border-color: var(--line);
+  justify-content: flex-start;
+  text-align: left;
+  color: var(--ink);
+}
+
+.dropzone-filename {
+  font: 500 13px/18px var(--mono);
+  color: var(--ink);
+}
+
+.dropzone-meta {
+  font: 400 13px/18px var(--mono);
+  color: var(--ink-2);
+}
+
+.dropzone-check {
+  color: var(--action);
+  font-weight: 700;
+}
+
+.dropzone-replace {
+  margin-left: auto;
+  color: var(--action);
+  font-weight: 500;
+}
+
+.dropzone:has(input:focus-visible) {
+  outline: 2px solid var(--action);
+  outline-offset: 2px;
+}
+
+/* Reserve the result slot so a parsed file does not push the page (§5). */
+.upload-card {
+  min-height: 226px;
+}
+
+.upload-result {
+  margin-top: 16px;
+}
+
+.upload-result-summary {
+  margin: 0;
+}
+
+/* ---------- §3.5 Status language ---------- */
+
+.chip {
+  display: inline-block;
+  font: 500 12px/16px var(--ui);
+  padding: 3px 8px;
+  border-radius: var(--radius-control);
+}
+
+.chip-ok { background: var(--ok-tint); color: var(--action); }
+.chip-warn { background: var(--warn-tint); color: var(--warn); }
+.chip-exception { background: var(--err-tint); color: var(--err); }
+.chip-scheduled { background: var(--b1); color: var(--action); }
+
+.chip-wk-b1 { background: var(--b1); color: var(--b1-deep); }
+.chip-wk-b2 { background: var(--b2); color: var(--b2-deep); }
+.chip-wk-b3 { background: var(--b3); color: var(--b3-deep); }
+.chip-wk-b4 { background: var(--b4); color: var(--b4-deep); }
+
+.banner {
+  border: 1px solid var(--warn);
+  background: var(--warn-tint);
+  color: var(--warn);
+  border-radius: var(--radius-control);
+  padding: 10px 14px;
   margin: 0 0 16px;
 }
 
-.summaryline .mono5 {
-  font-size: 14px;
+.banner-inline {
+  margin: 16px 0 0;
+}
+
+.banner-error {
+  border-color: var(--err);
+  background: var(--err-tint);
+  color: var(--err);
+}
+
+/* Validation output: a bordered list inside the file's card. */
+.issue-group {
+  border: 1px solid var(--err);
+  background: var(--err-tint);
+  border-radius: var(--radius-control);
+  padding: 12px 14px;
+  margin-top: 12px;
+  color: var(--err);
+}
+
+.issue-group-warning {
+  border-color: var(--warn);
+  background: var(--warn-tint);
+  color: var(--warn);
+}
+
+.issue-group-title {
+  font: 500 13px/18px var(--ui);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 6px;
+}
+
+.issue-list {
+  list-style: none;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.issue-list li {
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.issue-row {
+  font: 500 13px/18px var(--mono);
+}
+
+/* ---------- §3.6 Blocking panel ---------- */
+
+.sheet {
+  width: 420px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--line);
+  border-radius: var(--radius-card) 0 0 var(--radius-card);
+  padding: 24px;
+}
+
+.block-list {
+  list-style: none;
+  padding: 0;
+}
+
+.block-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line-50);
+}
+
+/* ---------- Step flow ---------- */
+
+.step-panel[hidden] {
+  display: none;
+}
+
+.app-footer {
+  position: fixed;
+  left: var(--rail-width);
+  right: 0;
+  bottom: 0;
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  padding: 12px 32px;
+  background: var(--surface);
+  border-top: 1px solid var(--line);
+}
+
+/* ---------- §5 Quality floor ---------- */
+
+:focus-visible {
+  outline: 2px solid var(--action);
+  outline-offset: 2px;
 }
 
 @media (prefers-reduced-motion: no-preference) {
+  .btn,
   .wk,
-  .fte-input {
+  .dropzone,
+  .toggle-option,
+  input,
+  select,
+  .stepper-item {
     transition: background-color 150ms ease-out, border-color 150ms ease-out, color 150ms ease-out;
+  }
+}
+
+/* Below 1024px the rail becomes a top bar. */
+@media (max-width: 1024px) {
+  .app {
+    display: block;
+  }
+
+  .rail {
+    width: auto;
+    flex-direction: row;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px 16px;
+    padding: 12px 24px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .wordmark {
+    padding: 0;
+  }
+
+  .rail-steps {
+    display: flex;
+    gap: 4px;
+  }
+
+  .stepper-item {
+    width: auto;
+    padding: 6px 12px;
+    border-left: 0;
+    border-bottom: 3px solid transparent;
+  }
+
+  .stepper-item.active {
+    border-left-color: transparent;
+    border-bottom-color: var(--action);
+  }
+
+  .rail-note {
+    margin: 0 0 0 auto;
+    padding: 0;
+  }
+
+  .app-main {
+    padding: 24px 24px 96px;
+  }
+
+  .app-footer {
+    left: 0;
+    padding: 12px 24px;
   }
 }
