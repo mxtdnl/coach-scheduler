@@ -59,6 +59,11 @@ import {
   createConstantColumn,
   buildPreviewRows,
   exportAppointments,
+  exportCoachAssignments,
+  buildCoachAssignmentRows,
+  COACH_ASSIGNMENT_HEADERS,
+  findCoachesWithoutSfId,
+  coachSfIdErrorMessage,
   sanitiseMapping,
   FIELD_LABELS,
 } from './exporter.js';
@@ -1471,6 +1476,117 @@ function renderAppointmentsPreview(eng) {
     </div>`;
 }
 
+/**
+ * The second export (SPEC.md §7.3): a Salesforce-style batch upload with one
+ * row per scheduled student/coach assignment, not one row per meeting. Only
+ * rendered in auto-assign mode — in pre-allocated mode the coach comes from
+ * the user's own pairings file, so an "assignments" export would tell them
+ * nothing they did not upload, and the spec scopes the file to auto-assign.
+ */
+function renderCoachAssignmentsExport(eng) {
+  if (state.mode !== 'auto') return '';
+
+  const rows = buildCoachAssignmentRows(eng.assignments);
+  const missingSfId = findCoachesWithoutSfId(eng.assignments);
+
+  // A blank Coach User ID would produce a batch upload Salesforce cannot
+  // match, so the export is refused and the affected coaches are named
+  // (DESIGN.md §3.5: errors state the fix).
+  const issues =
+    missingSfId.length > 0
+      ? renderIssueList('Coach SF ID', [{ message: coachSfIdErrorMessage(missingSfId) }])
+      : '';
+  const disabled = rows.length === 0 || missingSfId.length > 0 ? ' disabled' : '';
+
+  const shown = Math.min(rows.length, 50);
+  const count =
+    rows.length > 50
+      ? `Showing the first ${shown} of ${rows.length} students`
+      : `${rows.length} student${rows.length === 1 ? '' : 's'}`;
+  const note =
+    rows.length === 0
+      ? 'No student has been assigned a coach, so there is nothing to upload yet.'
+      : `${count}, one row each — the coach they were assigned, not their four meetings. Separate file from the appointments export above.`;
+
+  return `
+    <div class="card">
+      <div class="section-head">
+        <div>
+          <h2>Coach assignments</h2>
+          <p class="help-text" style="margin:0">${escapeHtml(note)}</p>
+        </div>
+        <button type="button" id="export-assignments-btn" class="btn btn-secondary"${disabled}>Export coach assignments</button>
+      </div>
+      ${issues}
+      <div class="table-wrap">
+        <table>
+          <thead><tr>${COACH_ASSIGNMENT_HEADERS.map((header) => `<th>${escapeHtml(header)}</th>`).join('')}</tr></thead>
+          <tbody>${
+            rows.length === 0
+              ? `<tr><td class="table-empty" colspan="${COACH_ASSIGNMENT_HEADERS.length}">No coach assignments to export.</td></tr>`
+              : rows
+                  .slice(0, 50)
+                  .map(
+                    (row) =>
+                      `<tr>${[
+                        row.studentName,
+                        row.recordType,
+                        row.recordTypeName,
+                        row.type,
+                        row.coachName,
+                        row.coachUserId,
+                        row.status,
+                      ]
+                        .map((value) => `<td class="mono">${escapeHtml(String(value))}</td>`)
+                        .join('')}</tr>`
+                  )
+                  .join('')
+          }</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+/** Re-queries and (re-)wires the coach-assignments Export button after every re-render. */
+function attachCoachAssignmentsButtonHandler() {
+  const btn = document.getElementById('export-assignments-btn');
+  if (!btn) return;
+  btn.addEventListener('click', () => {
+    if (!hasResultsInputs()) {
+      showError('There is nothing to export yet.', blockedExplanation(), 'export-assignments');
+      return;
+    }
+    const eng = guard('rebuilding the schedule for export', computeEngineState);
+    if (!eng) return;
+    if (state.mode !== 'auto') {
+      showError(
+        'The coach assignments export is only available in auto-assign mode.',
+        'In pre-allocated mode the student–coach pairings come from your own pairings file.',
+        'export-assignments'
+      );
+      return;
+    }
+    if (eng.assignments.length === 0) {
+      showError(
+        'There is nothing to export: no student was assigned a coach.',
+        'Check the unassigned students table for the reason.',
+        'export-assignments'
+      );
+      return;
+    }
+    const missingSfId = findCoachesWithoutSfId(eng.assignments);
+    if (missingSfId.length > 0) {
+      showError(
+        'The coach assignments export needs a Coach SF ID for every assigned coach.',
+        coachSfIdErrorMessage(missingSfId),
+        'export-assignments'
+      );
+      return;
+    }
+    guard('creating the coach assignments file', () => exportCoachAssignments(eng.assignments, 'auto'));
+  });
+}
+
 /** Re-queries and (re-)wires the Export button after every results-content re-render. */
 function attachExportButtonHandler() {
   const btn = document.getElementById('export-btn');
@@ -1525,10 +1641,12 @@ function renderResults() {
     renderClassBlockResults(eng),
     renderExceptionsTable(eng),
     renderAppointmentsPreview(eng),
+    renderCoachAssignmentsExport(eng),
   ];
 
   container.innerHTML = parts.join('');
   attachExportButtonHandler();
+  attachCoachAssignmentsButtonHandler();
 }
 
 /**

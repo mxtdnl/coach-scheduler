@@ -144,6 +144,17 @@ Run after Session 6. Replace `SPEC.md` with the v1.2 version before starting.
 
 **Verify:** export a term starting in September and confirm meetings before the October/November clock changes carry `+01:00` (London) or `-04:00` (Boston) and later ones carry `+00:00` / `-05:00`, while Dubai stays `+04:00` throughout; upload a coach file with two different emails for one coach and confirm the error names both rows; tests.html all green.
 
+### Session 9 — Coach assignments batch upload (v1.4)
+
+Run after Session 8. Replace `SPEC.md` with the v1.4 version before starting.
+
+**Prompt:**
+
+> Read SPEC.md §7.3, §9 and §13, plus §7.1/§7.2 for context. Add a **second** export, offered on the Results step in auto-assign mode only: a Salesforce batch upload with exactly seven columns — Student Name, Record Type (`0121Q000001Dw6tQAC`), Record Type Name (`Institutional Relations`), Type (`coach`), Coach Name, Coach User ID, Status (`current`) — and one row per scheduled student, not one row per meeting. Coach User ID is an export header only: populate it from the existing Coach SF ID carried on the assignment's slot, add no new input field and no new template column, and reuse the existing Coach SF ID validation. Build the rows from the scheduler's `assignments` (the authoritative final student→coach mapping), excluding unassigned students and keeping students whose meetings were displaced by the §11 post-pass. Keep it out of the §7.2 mapping editor so custom appointment mappings cannot reshape it. Write every cell as text so Salesforce ids are not reformatted, name the file `coach_assignments_YYYY-MM-DD_HHMM.xlsx`, and refuse the export with a readable, coach-naming error if an assigned coach has no Coach SF ID. Add the §13 tests and keep the existing tests green. Update SPEC.md, README.md, and BUILD_GUIDE.md. Commit and push.
+
+**Verify:** run auto-assign with several coaches and students and confirm the downloaded workbook has exactly the seven headers in order, one row per scheduled student (a student with four meetings appears once), Coach User ID identical to that coach's Coach SF ID, and every cell stored as text; confirm unassigned students are absent; switch to pre-allocated mode and confirm the card and button are not shown; change the appointment export mapping and confirm the batch upload is unchanged; tests.html all green.
+
+
 ---
 
 ## Part D — Ongoing use and future changes

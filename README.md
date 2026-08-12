@@ -3,7 +3,9 @@
 Term Scheduler builds a term's worth of coaching meetings for you. You give it
 four things — the class timetables, when each coach is free, who the students
 are, and (optionally) who coaches whom — and it hands back a spreadsheet with
-one row per meeting, ready to upload or share.
+one row per meeting, ready to upload or share. In auto-assign mode you also get
+a second file: a batch upload with **one row per student and the coach they
+were given** — see [section 7](#7-the-two-export-files).
 
 A run can cover several classes at once. Each class's timetable is a **class
 block**, every student belongs to exactly one of them, and a student's coaching
@@ -25,7 +27,7 @@ own computer and are never sent anywhere. Closing the tab throws the data away.
 4. [Step-by-step walkthrough](#4-step-by-step-walkthrough)
 5. [The two modes](#5-the-two-modes)
 6. [FTE: sharing students between coaches](#6-fte-sharing-students-between-coaches)
-7. [Changing the export columns](#7-changing-the-export-columns)
+7. [The two export files](#7-the-two-export-files)
 8. [Blocked weeks and dates](#8-blocked-weeks-and-dates)
 9. [Starting over](#9-starting-over)
 10. [Troubleshooting: every message the tool can show](#10-troubleshooting-every-message-the-tool-can-show)
@@ -45,7 +47,9 @@ tells you where it could not.
 
 What you get at the end is an Excel file with **one row per appointment** —
 four rows for each student who was scheduled — with the student, the coach, the
-date, the day, and the times.
+date, the day, and the times. In auto-assign mode there is a **second** file
+too, the coach assignments batch upload: one row per student saying which coach
+they ended up with ([section 7](#7-the-two-export-files)).
 
 What it does **not** do: it does not send invitations, book rooms, email
 anybody, or know about public holidays. It is a planner, not a calendar.
@@ -262,6 +266,10 @@ by how much, before you get as far as the results.
   your export will have.
 - **Export appointments** — downloads the spreadsheet, named
   `appointments_2026-09-01_1430.xlsx` (the date and time you generated it).
+- **Coach assignments** (auto-assign only) — a second card with its own
+  **Export coach assignments** button, giving one row per student and the coach
+  they were assigned. It is a different file from the appointments export; see
+  [section 7](#7-the-two-export-files).
 
 By default the export has these columns, sorted by date, then start time, then
 coach:
@@ -371,7 +379,70 @@ Changing an FTE updates the quotas and the whole schedule straight away.
 
 ---
 
-## 7. Changing the export columns
+## 7. The two export files
+
+A run gives you **one or two** files, depending on the mode:
+
+| File | When | What is in it |
+|---|---|---|
+| `appointments_2026-09-01_1430.xlsx` | always | One row per **meeting** — four rows per scheduled student |
+| `coach_assignments_2026-09-01_1430.xlsx` | auto-assign only | One row per **student**, naming the coach they were assigned |
+
+They are separate downloads with separate buttons; neither replaces the other.
+
+### 7.1 The appointments export
+
+Press **Export appointments** in the Results step. This is the file described
+in [section 4](#step-4--results), and you can reshape its columns — see
+[7.3](#73-changing-the-appointment-export-columns).
+
+### 7.2 The coach assignments export (auto-assign only)
+
+At the bottom of the Results step, the **Coach assignments** card shows exactly
+what this file will contain, with an **Export coach assignments** button beside
+it. It downloads `coach_assignments_2026-09-01_1430.xlsx` (the date and time
+you generated it).
+
+This file is a batch-upload template for Salesforce, and it is about
+**assignments, not meetings**: a student with four coaching meetings gets
+**one** row here, not four. It has seven columns, always these, always in this
+order:
+
+| Column | What it holds |
+|---|---|
+| Student Name | The student's name, as in your student list |
+| Record Type | Always `0121Q000001Dw6tQAC` — the Salesforce record type id |
+| Record Type Name | Always `Institutional Relations` |
+| Type | Always `coach` |
+| Coach Name | The coach the tool assigned to that student |
+| Coach User ID | That coach's **Coach SF ID** — the value already in your coach availability file |
+| Status | Always `current` |
+
+**Coach User ID needs no new input.** It is the same Salesforce identifier as
+the **Coach SF ID** you already fill in on the coach availability template —
+only the heading differs, because that is what the batch upload calls it. There
+is no extra column to add and no extra file to prepare.
+
+A few things worth knowing:
+
+- **Students who could not be scheduled are left out.** If somebody is in the
+  Unassigned table, they have no coach, so they get no row.
+- **A student whose meeting was moved or lost to a blocked week still appears.**
+  Blocking never changes who a student's coach is, so the assignment still
+  stands; only one of their four meetings is missing from the appointments
+  file.
+- **Every student appears at most once.** No duplicates.
+- **The same list, every time.** Same inputs, same file, in the same order.
+- **Your custom appointment columns do not touch it.** The seven columns are
+  fixed, because the system receiving the file expects exactly them.
+- **It only appears in auto-assign mode.** In pre-allocated mode you told the
+  tool who coaches whom, so the card is not shown at all.
+- **A coach with no Coach SF ID stops the export.** Rather than send a blank
+  Coach User ID, the button is greyed out and the card names the coach who
+  needs an ID. (The upload step normally catches this first: a blank Coach SF
+  ID is a row error on the availability file.)
+
+### 7.3 Changing the appointment export columns
 
 Open **Export settings** at the bottom of the Results step if the default
 columns are not the shape you need — for example when the file has to match a
@@ -390,7 +461,9 @@ You can:
 - **Reset to defaults** — puts the eleven standard columns back.
 
 The preview table above always shows what you will actually get, and your
-layout is remembered for next time.
+layout is remembered for next time. These settings apply to the **appointments**
+file only — the coach assignments file keeps its seven fixed columns whatever
+you do here.
 
 ---
 
@@ -518,6 +591,9 @@ These appear as a banner at the top of the page and can be dismissed.
 | **The Excel library could not be loaded from the internet, so files cannot be read or exported.** | The tool downloads one small component the first time it opens, and that download failed — usually no connection, or a network that blocks it. | Reconnect and reload the page. If your network blocks it, ask IT to allow `cdn.sheetjs.com`. |
 | **There is nothing to export yet.** | You pressed Export before the tool had everything it needs. | The message underneath says exactly what is missing — a file, a fix, or the start date. |
 | **There is nothing to export: no student could be scheduled.** | The schedule came out empty. | Check the Unassigned students table for the reason. |
+| **There is nothing to export: no student was assigned a coach.** | You pressed *Export coach assignments* on a run where nobody was scheduled. | Check the Unassigned students table for the reason. |
+| **The coach assignments export needs a Coach SF ID for every assigned coach.** | A coach in the schedule has no Coach SF ID, so their Coach User ID would be blank. | The message names the coach. Put their Coach SF ID in the coach availability file and upload it again. |
+| **The coach assignments export is only available in auto-assign mode.** | The second export does not apply in pre-allocated mode, where you supplied the pairings yourself. | Nothing to do — the appointments export still works as usual. |
 | **All columns are excluded. Include at least one in Export settings.** | Every export column has been unticked, so there is nothing to write. This one appears in the Appointments table, and the Export button is greyed out until you fix it. | Tick at least one column, or press *Reset to defaults*. |
 | **This setting could not be saved for next time…** | The browser is refusing to store settings — usually private browsing, or storage turned off. | Nothing is broken; the tool works normally, it just will not remember your settings after a reload. |
 | **Saved settings could not be read…** / **The saved export layout could not be read…** | Stored settings were unreadable, so defaults were used. | Nothing to do. *Start over* with *Also clear saved settings* ticked removes the leftovers for good. |

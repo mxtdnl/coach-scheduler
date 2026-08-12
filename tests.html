@@ -4,6 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Scheduler tests — Coaching Meeting Scheduler</title>
+<!-- The §7.3 workbook tests assert on real SheetJS output, so the library is
+     loaded here exactly as index.html loads it (SPEC.md §2). If the CDN is
+     unreachable those tests report as skipped rather than failing. -->
+<script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
 <link rel="stylesheet" href="styles.css">
 <style>
   .test-summary { font-weight: 600; margin: 1rem 0; padding: 0.75rem 1rem; border-radius: 6px; }
@@ -13,6 +17,7 @@
   ul.test-list li { padding: 0.4rem 0.6rem; border-bottom: 1px solid #e6e6e6; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.85rem; }
   ul.test-list li.pass { color: #14562c; }
   ul.test-list li.fail { color: #7a1c1c; background: #fdeaea; }
+  ul.test-list li.skip { color: #6b5a1e; background: #faf3dd; }
   ul.test-list .badge { display: inline-block; min-width: 4.2rem; font-weight: 700; }
   ul.test-list .detail { display: block; margin-top: 0.25rem; white-space: pre-wrap; }
   .test-group { margin-top: 1.5rem; font-weight: 600; }
@@ -51,6 +56,22 @@ import {
 } from './js/scheduler.js';
 import { formatIsoWithOffset, wallClockToInstant, campusOrDefault, CAMPUSES } from './js/timezone.js';
 import { parseClassScheduleSheet, parseStudentListSheet, checkStudentClassBlocks } from './js/parse.js';
+import {
+  getDefaultMapping,
+  createConstantColumn,
+  buildPreviewRows,
+  buildExportFilename,
+  buildCoachAssignmentRows,
+  buildCoachAssignmentAoa,
+  buildCoachAssignmentsWorkbook,
+  buildCoachAssignmentsFilename,
+  findCoachesWithoutSfId,
+  coachSfIdErrorMessage,
+  exportCoachAssignments,
+  COACH_ASSIGNMENT_HEADERS,
+  COACH_ASSIGNMENT_CONSTANTS,
+} from './js/exporter.js';
+import { isXLSXAvailable } from './js/xlsx-loader.js';
 
 // ---- tiny assertion harness ----
 
@@ -66,6 +87,19 @@ function test(name, fn) {
   } catch (e) {
     results.push({ group: currentGroup, name, ok: false, detail: e && e.message ? e.message : String(e) });
   }
+}
+
+/**
+ * A test that needs the real SheetJS library. When the CDN is unreachable
+ * (offline laptop, blocked network) it is reported as skipped rather than
+ * failed, so an offline run still gives a meaningful result.
+ */
+function testWithXLSX(name, fn) {
+  if (!isXLSXAvailable()) {
+    results.push({ group: currentGroup, name, ok: true, skipped: true, detail: 'SheetJS was not loaded from the CDN.' });
+    return;
+  }
+  test(name, fn);
 }
 
 function fail(message) { throw new Error(message); }
@@ -1271,12 +1305,329 @@ test('displaced meetings are never rebooked onto the student own class (§11.3)'
   });
 });
 
+// ---- SPEC.md §7.3 — coach-assignments batch upload (auto-assign only) ----
+
+group('§7.3 — coach assignments batch upload');
+
+// Two coaches with real Coach SF IDs, and enough capacity for everyone.
+const BU_AVAILABILITY = [
+  avail('Coach A', 'Monday', '09:00', '12:00', '005XX000001ABCAA0', 'a@example.com'),
+  avail('Coach B', 'Tuesday', '09:00', '12:00', '0051Q00000XyZaBQAV', 'b@example.com'),
+];
+const BU_SLOTS = buildSlots(BU_AVAILABILITY, []);
+const BU_STUDENTS = students(5);
+
+function batchUploadRun(studentList = BU_STUDENTS, slots = BU_SLOTS, availability = BU_AVAILABILITY) {
+  const coaches = [...new Set(availability.map((row) => row.coachName))];
+  const slotCounts = slotCountsOf(slots);
+  const fte = Object.fromEntries(coaches.map((c) => [c, 1]));
+  const quotas = computeQuotas(coaches, fte, studentList.length, slotCounts);
+  return schedule(studentList, slots, 'auto', quotas, coaches);
+}
+
+const BU_RUN = batchUploadRun();
+const BU_ROWS = buildCoachAssignmentRows(BU_RUN.assignments);
+const BU_AOA = buildCoachAssignmentAoa(BU_RUN.assignments);
+
+test('an auto-assign run produces a coach-assignments export', () => {
+  assert(BU_RUN.assignments.length > 0, 'the fixture assigns students');
+  assertEqual(BU_ROWS.length, BU_RUN.assignments.length, 'one row per assignment');
+  assert(BU_AOA.length === BU_ROWS.length + 1, 'the sheet is a header row plus one row per student');
+});
+
+test('the seven headers appear in exactly the required order', () => {
+  assertDeep(BU_AOA[0], [
+    'Student Name',
+    'Record Type',
+    'Record Type Name',
+    'Type',
+    'Coach Name',
+    'Coach User ID',
+    'Status',
+  ]);
+  assertDeep([...COACH_ASSIGNMENT_HEADERS], BU_AOA[0], 'the exported constant matches the sheet');
+  BU_AOA.forEach((row, i) => assertEqual(row.length, 7, `row ${i} has exactly seven cells`));
+});
+
+test('Record Type is 0121Q000001Dw6tQAC on every row', () => {
+  assert(BU_ROWS.length > 0, 'there are rows to check');
+  BU_ROWS.forEach((row) => assertEqual(row.recordType, '0121Q000001Dw6tQAC', 'Record Type constant'));
+  BU_AOA.slice(1).forEach((row) => assertEqual(row[1], '0121Q000001Dw6tQAC'));
+  assertEqual(COACH_ASSIGNMENT_CONSTANTS.recordType, '0121Q000001Dw6tQAC');
+});
+
+test('Record Type Name is Institutional Relations on every row', () => {
+  BU_ROWS.forEach((row) => assertEqual(row.recordTypeName, 'Institutional Relations'));
+  BU_AOA.slice(1).forEach((row) => assertEqual(row[2], 'Institutional Relations'));
+});
+
+test('Type is coach on every row', () => {
+  BU_ROWS.forEach((row) => assertEqual(row.type, 'coach'));
+  BU_AOA.slice(1).forEach((row) => assertEqual(row[3], 'coach'));
+});
+
+test('Status is current on every row', () => {
+  BU_ROWS.forEach((row) => assertEqual(row.status, 'current'));
+  BU_AOA.slice(1).forEach((row) => assertEqual(row[6], 'current'));
+});
+
+test('every scheduled student appears exactly once', () => {
+  const names = BU_ROWS.map((row) => row.studentName);
+  assertEqual(new Set(names).size, names.length, 'no duplicate student rows');
+  BU_RUN.assignments.forEach(({ student }) => {
+    const matches = BU_ROWS.filter((row) => row.studentName === student.studentName);
+    assertEqual(matches.length, 1, `${student.studentName} appears once`);
+  });
+});
+
+test('a student with four coaching meetings gets one row, not four', () => {
+  const appointments = expandToAppointments(BU_RUN.assignments, START_MONDAY, LONDON);
+  const first = BU_RUN.assignments[0].student;
+  assertEqual(
+    appointments.filter((row) => row.contactSfId === first.contactSfId).length,
+    4,
+    'the appointments export still carries four meeting rows'
+  );
+  assertEqual(
+    BU_ROWS.filter((row) => row.studentName === first.studentName).length,
+    1,
+    'the batch upload carries one'
+  );
+  assertEqual(BU_ROWS.length * 4, appointments.length, 'rows are students, not meetings');
+});
+
+test('the exported coach is the student final assigned coach', () => {
+  const byName = new Map(BU_ROWS.map((row) => [row.studentName, row]));
+  BU_RUN.assignments.forEach(({ student, coach }) => {
+    assertEqual(byName.get(student.studentName).coachName, coach, `${student.studentName} coach`);
+  });
+  // Both coaches are actually used in this fixture, so the test would catch a
+  // builder that hard-coded the first coach.
+  assert(new Set(BU_ROWS.map((row) => row.coachName)).size > 1, 'more than one coach is in play');
+});
+
+test('several students assigned to one coach each get their own row', () => {
+  const perCoach = new Map();
+  BU_ROWS.forEach((row) => perCoach.set(row.coachName, (perCoach.get(row.coachName) || 0) + 1));
+  assert([...perCoach.values()].some((count) => count > 1), 'at least one coach has several students');
+});
+
+test('Coach User ID is exactly the source Coach SF ID', () => {
+  const sfIdByCoach = new Map(BU_AVAILABILITY.map((row) => [row.coachName, row.coachSfId]));
+  BU_ROWS.forEach((row) => {
+    assertEqual(row.coachUserId, sfIdByCoach.get(row.coachName), `${row.coachName} Coach User ID`);
+  });
+  // And identical to the value the scheduler carried on the slot.
+  BU_RUN.assignments.forEach(({ student, slot }) => {
+    const row = BU_ROWS.find((r) => r.studentName === student.studentName);
+    assertEqual(row.coachUserId, slot.coachSfId, 'Coach User ID equals slot.coachSfId');
+  });
+});
+
+test('no new coach input field is needed: the §3.2 columns alone populate Coach User ID', () => {
+  // Exactly the SPEC.md §3.2 availability shape — no coachUserId anywhere.
+  const availabilityRow = {
+    coachName: 'Coach Z',
+    coachSfId: '005ZZ000009ZZZAA1',
+    coachEmail: 'z@example.com',
+    day: 'Monday',
+    start: t('09:00'),
+    end: t('11:00'),
+  };
+  assert(!('coachUserId' in availabilityRow), 'the input shape has no Coach User ID field');
+  const slots = buildSlots([availabilityRow], []);
+  slots.forEach((slot) => assert(!('coachUserId' in slot), 'slots carry no Coach User ID field'));
+  const run = batchUploadRun(students(1, 'Z'), slots, [availabilityRow]);
+  const rows = buildCoachAssignmentRows(run.assignments);
+  assertEqual(rows.length, 1);
+  assertEqual(rows[0].coachUserId, '005ZZ000009ZZZAA1');
+});
+
+test('unassigned students are excluded from the batch upload', () => {
+  // Coach A alone: 2 slots × 3 offsets = 6 places, 8 students → 2 unassigned.
+  const oneCoach = [BU_AVAILABILITY[0]];
+  const slots = buildSlots(oneCoach, [cls('Monday', '10:00', '11:00', 'Maths')]);
+  const run = batchUploadRun(students(8, 'U'), slots, oneCoach);
+  assert(run.unassigned.length > 0, 'the fixture leaves students unassigned');
+  const rows = buildCoachAssignmentRows(run.assignments);
+  assertEqual(rows.length, run.assignments.length);
+  const unassignedNames = new Set(run.unassigned.map((u) => u.student.studentName));
+  rows.forEach((row) => assert(!unassignedNames.has(row.studentName), `${row.studentName} is not unassigned`));
+});
+
+test('a student whose meeting was blocked keeps their assignment row', () => {
+  const run = batchUploadRun();
+  const appointments = expandToAppointments(run.assignments, START_MONDAY, LONDON);
+  // Block Coach A for the whole of term block 1, so meetings move or become
+  // exceptions — neither of which changes who the student's coach is (§11.3).
+  const blocked = applyBlocks(
+    appointments,
+    [{ coach: 'Coach A', week: 1 }, { coach: 'Coach A', week: 2 }, { coach: 'Coach A', week: 3 }],
+    BU_SLOTS
+  );
+  assert(blocked.exceptions.length > 0, 'the fixture produces exceptions');
+  const rows = buildCoachAssignmentRows(run.assignments);
+  blocked.exceptions.forEach((exception) => {
+    const matches = rows.filter((row) => row.studentName === exception.student.studentName);
+    assertEqual(matches.length, 1, `${exception.student.studentName} still has exactly one assignment row`);
+  });
+});
+
+test('a missing Coach SF ID is detected and named', () => {
+  const availability = [
+    avail('Coach A', 'Monday', '09:00', '12:00', '005XX000001ABCAA0', 'a@example.com'),
+    avail('No ID Coach', 'Tuesday', '09:00', '12:00', '   ', 'n@example.com'),
+  ];
+  const slots = buildSlots(availability, []);
+  const run = batchUploadRun(students(12, 'M'), slots, availability);
+  const missing = findCoachesWithoutSfId(run.assignments);
+  assertDeep(missing, ['No ID Coach'], 'the coach with no Coach SF ID is named');
+  assert(coachSfIdErrorMessage(missing).includes('No ID Coach'), 'the message names the coach');
+  assert(coachSfIdErrorMessage(missing).includes('Coach SF ID'), 'the message names the field');
+
+  let threw = '';
+  try {
+    buildCoachAssignmentsWorkbook(run.assignments, 'auto');
+  } catch (e) {
+    threw = e.message;
+  }
+  assert(threw.includes('No ID Coach'), `the export is refused and says why (got: ${threw})`);
+
+  // A coach whose id is present is not flagged.
+  assertDeep(findCoachesWithoutSfId(BU_RUN.assignments), []);
+});
+
+test('output is deterministic for identical inputs', () => {
+  const a = buildCoachAssignmentAoa(batchUploadRun().assignments);
+  const b = buildCoachAssignmentAoa(batchUploadRun().assignments);
+  assertDeep(a, b, 'two identical runs produce identical sheets');
+  assertDeep(
+    BU_ROWS.map((row) => row.studentName),
+    BU_RUN.assignments.map((a2) => a2.student.studentName),
+    'row order follows the scheduler assignment order'
+  );
+});
+
+test('pre-allocated mode does not produce the auto-assign export', () => {
+  const pairings = BU_STUDENTS.map((student, i) => ({
+    contactSfId: student.contactSfId,
+    coachName: i % 2 === 0 ? 'Coach A' : 'Coach B',
+  }));
+  const run = schedule(BU_STUDENTS, BU_SLOTS, 'pre-allocated', pairings, ['Coach A', 'Coach B']);
+  assert(run.assignments.length > 0, 'the pre-allocated fixture assigns students');
+  let threw = '';
+  try {
+    buildCoachAssignmentsWorkbook(run.assignments, 'pre-allocated');
+  } catch (e) {
+    threw = e.message;
+  }
+  assert(threw.includes('auto-assign'), `the export refuses in pre-allocated mode (got: ${threw})`);
+  threw = '';
+  try {
+    exportCoachAssignments(run.assignments, 'pre-allocated');
+  } catch (e) {
+    threw = e.message;
+  }
+  assert(threw.includes('auto-assign'), 'the download entry point refuses too');
+});
+
+test('the existing appointments export is unchanged', () => {
+  const included = getDefaultMapping().filter((col) => col.included).map((col) => col.header);
+  assertDeep(included, [
+    'Student Name',
+    'Contact SF ID (Student)',
+    'Student Email',
+    'Service Name',
+    'Coach Name',
+    'Coach SF ID',
+    'Coach Email',
+    'Meeting Start Date & Time',
+    'Meeting End Date & Time',
+    'Meeting Status',
+    'Rescheduled From Week',
+  ], 'the §7.1 default columns are untouched');
+  assert(/^appointments_\d{4}-\d{2}-\d{2}_\d{4}\.xlsx$/.test(buildExportFilename(new Date(2026, 8, 7, 9, 5))));
+  assertEqual(buildExportFilename(new Date(2026, 8, 7, 9, 5)), 'appointments_2026-09-07_0905.xlsx');
+});
+
+test('the batch-upload filename is distinct and follows the timestamp convention', () => {
+  assertEqual(buildCoachAssignmentsFilename(new Date(2026, 8, 7, 9, 5)), 'coach_assignments_2026-09-07_0905.xlsx');
+});
+
+test('a custom appointment mapping does not change the seven-column batch upload', () => {
+  const custom = [
+    { ...createConstantColumn('Record Type', 'something else'), id: 'c1' },
+    { id: 'coachName', type: 'field', field: 'coachName', header: 'Renamed coach', included: true },
+    { id: 'studentName', type: 'field', field: 'studentName', header: 'Renamed student', included: false },
+  ];
+  const appointments = expandToAppointments(BU_RUN.assignments, START_MONDAY, LONDON);
+  const preview = buildPreviewRows(appointments, custom, 5);
+  assertDeep(preview.columns.map((col) => col.header), ['Record Type', 'Renamed coach'], 'the mapping really is custom');
+
+  // The batch upload takes no mapping at all, and is byte-identical to the run
+  // built before the custom mapping existed.
+  assertDeep(buildCoachAssignmentAoa(BU_RUN.assignments), BU_AOA);
+  assertDeep(buildCoachAssignmentAoa(BU_RUN.assignments)[0], [...COACH_ASSIGNMENT_HEADERS]);
+  assertEqual(buildCoachAssignmentAoa(BU_RUN.assignments)[1][1], '0121Q000001Dw6tQAC', 'the constant is not overridden');
+});
+
+testWithXLSX('the generated workbook carries the exact headers and values', () => {
+  const workbook = buildCoachAssignmentsWorkbook(BU_RUN.assignments, 'auto');
+  assertDeep(workbook.SheetNames, ['Coach Assignments']);
+  const sheet = workbook.Sheets['Coach Assignments'];
+  const aoa = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: true });
+  assertDeep(aoa[0], [...COACH_ASSIGNMENT_HEADERS], 'workbook header row');
+  assertEqual(aoa.length, BU_ROWS.length + 1, 'one workbook row per scheduled student');
+  aoa.slice(1).forEach((row, i) => {
+    assertDeep(row, [
+      BU_ROWS[i].studentName,
+      '0121Q000001Dw6tQAC',
+      'Institutional Relations',
+      'coach',
+      BU_ROWS[i].coachName,
+      BU_ROWS[i].coachUserId,
+      'current',
+    ], `workbook row ${i + 1}`);
+  });
+});
+
+testWithXLSX('Salesforce identifiers survive a write/read round-trip as text', () => {
+  // An all-digit id is the case Excel would otherwise reformat as a number.
+  const availability = [avail('Coach N', 'Monday', '09:00', '11:00', '0051234567890123', 'n@example.com')];
+  const slots = buildSlots(availability, []);
+  const run = batchUploadRun(students(1, 'N'), slots, availability);
+  const workbook = buildCoachAssignmentsWorkbook(run.assignments, 'auto');
+  const sheet = workbook.Sheets['Coach Assignments'];
+
+  ['B2', 'F2'].forEach((address) => {
+    assertEqual(sheet[address].t, 's', `${address} is a text cell`);
+    assertEqual(sheet[address].z, undefined, `${address} carries no number format`);
+  });
+
+  const roundTripped = XLSX.read(XLSX.write(workbook, { type: 'array', bookType: 'xlsx' }), { type: 'array' });
+  const rows = XLSX.utils.sheet_to_json(roundTripped.Sheets['Coach Assignments'], { header: 1, raw: true });
+  assertEqual(rows[1][1], '0121Q000001Dw6tQAC', 'Record Type survives the round-trip unchanged');
+  assertEqual(rows[1][5], '0051234567890123', 'a numeric-looking Coach User ID keeps its leading zeros');
+  assertEqual(typeof rows[1][5], 'string', 'and stays a string');
+});
+
+testWithXLSX('an empty assignment list is refused rather than exported blank', () => {
+  let threw = '';
+  try {
+    buildCoachAssignmentsWorkbook([], 'auto');
+  } catch (e) {
+    threw = e.message;
+  }
+  assert(threw.includes('no coach assignments'), `got: ${threw}`);
+});
+
 // ---- render ----
 
 const list = document.getElementById('results');
 const summary = document.getElementById('summary');
 let lastGroup = null;
 let passed = 0;
+let skipped = 0;
 
 results.forEach((result) => {
   if (result.group !== lastGroup) {
@@ -1286,15 +1637,16 @@ results.forEach((result) => {
     heading.textContent = result.group;
     list.appendChild(heading);
   }
-  if (result.ok) passed += 1;
+  if (result.skipped) skipped += 1;
+  else if (result.ok) passed += 1;
   const item = document.createElement('li');
-  item.className = result.ok ? 'pass' : 'fail';
+  item.className = result.skipped ? 'skip' : result.ok ? 'pass' : 'fail';
   const badge = document.createElement('span');
   badge.className = 'badge';
-  badge.textContent = result.ok ? 'PASS' : 'FAIL';
+  badge.textContent = result.skipped ? 'SKIP' : result.ok ? 'PASS' : 'FAIL';
   item.appendChild(badge);
   item.appendChild(document.createTextNode(result.name));
-  if (!result.ok) {
+  if (!result.ok || result.skipped) {
     const detail = document.createElement('span');
     detail.className = 'detail';
     detail.textContent = result.detail;
@@ -1303,11 +1655,12 @@ results.forEach((result) => {
   list.appendChild(item);
 });
 
-const failed = results.length - passed;
+const failed = results.length - passed - skipped;
+const skipNote = skipped > 0 ? ` ${skipped} skipped (SheetJS not loaded).` : '';
 summary.className = `test-summary ${failed === 0 ? 'pass' : 'fail'}`;
 summary.textContent = failed === 0
-  ? `All ${results.length} tests passed.`
-  : `${failed} of ${results.length} tests failed.`;
+  ? `All ${passed} tests passed.${skipNote}`
+  : `${failed} of ${results.length} tests failed.${skipNote}`;
 document.title = `${failed === 0 ? 'PASS' : 'FAIL'} — Scheduler tests`;
 </script>
 </body>
