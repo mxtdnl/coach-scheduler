@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Term Scheduler — design reference</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;700&family=Spline+Sans+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:#F4F5F2; --surface:#FFFFFF; --ink:#20242C; --ink-2:#626A76;
+  --line:#E1E2DA; --action:#1D5C57; --ok-tint:#DCEBE7;
+  --b1:#D8E4F0; --b1-deep:#31506F; --b2:#E3DFF0; --b2-deep:#4A4173;
+  --b3:#F3EAC9; --b3-deep:#6E5A1E; --b4:#DDEAD3; --b4-deep:#3D5C33;
+  --warn:#8A5A1D; --warn-tint:#F7E3CE; --err:#9E3B36; --err-tint:#F3DBDA;
+  --dead:#ECEDE7;
+  --ui:"Schibsted Grotesk",sans-serif; --mono:"Spline Sans Mono",monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--paper);color:var(--ink);font:400 14px/22px var(--ui)}
+a{color:var(--action)}
+.frame{display:flex;min-height:100vh;border-bottom:6px solid var(--line)}
+.frame-label{position:sticky;top:0;background:var(--ink);color:#fff;font:500 11px/16px var(--mono);padding:4px 12px;letter-spacing:.06em;text-transform:uppercase;z-index:9}
+
+/* rail */
+.rail{width:240px;flex:none;background:var(--surface);border-right:1px solid var(--line);padding:24px 0;display:flex;flex-direction:column}
+.wordmark{font:700 17px/24px var(--ui);padding:0 24px 24px}
+.step{display:flex;gap:12px;align-items:center;padding:10px 24px;color:var(--ink-2);border-left:3px solid transparent}
+.step .n{font:500 13px/18px var(--mono)}
+.step.done .n{color:var(--action)}
+.step.active{border-left-color:var(--action);color:var(--ink);font-weight:700}
+.rail .note{margin-top:auto;padding:16px 24px 0;font-size:12px;line-height:17px;color:var(--ink-2)}
+
+/* main */
+.main{flex:1;max-width:1080px;padding:32px}
+h1{font:700 26px/32px var(--ui);letter-spacing:-.01em}
+.sub{color:var(--ink-2);margin:4px 0 24px}
+h2{font:700 17px/24px var(--ui);margin-bottom:4px}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:24px;margin-bottom:20px;box-shadow:0 1px 2px rgb(32 36 44 / 6%)}
+.card .desc{color:var(--ink-2);margin-bottom:16px}
+
+/* term ribbon */
+.ribbon{display:flex;gap:8px;align-items:flex-end;margin:0 0 28px}
+.blockgroup{display:flex;flex-direction:column;gap:4px}
+.blockgroup>span{font:500 11px/14px var(--ui);color:var(--ink-2)}
+.g1>span{color:var(--b1-deep)} .g2>span{color:var(--b2-deep)} .g3>span{color:var(--b3-deep)} .g4>span{color:var(--b4-deep)}
+.g1 .wk:not(.dead):not(.blocked){background:var(--b1);color:var(--b1-deep)}
+.g2 .wk:not(.dead):not(.blocked){background:var(--b2);color:var(--b2-deep)}
+.g3 .wk:not(.dead):not(.blocked){background:var(--b3);color:var(--b3-deep)}
+.g4 .wk:not(.dead):not(.blocked){background:var(--b4);color:var(--b4-deep)}
+.weeks{display:flex;gap:4px}
+.wk{width:40px;height:40px;border:1px solid var(--line);border-radius:6px;background:var(--surface);
+    display:flex;align-items:center;justify-content:center;font:500 13px/18px var(--mono)}
+.wk.dead{width:28px;background:var(--dead);color:var(--ink-2);text-decoration:line-through;
+  background-image:repeating-linear-gradient(45deg,transparent 0 4px,rgb(225 226 218/.55) 4px 6px)}
+.wk.blocked{background:var(--err-tint) !important;border-color:var(--err);color:var(--err) !important;text-decoration:line-through}
+.wk.warn{position:relative}
+.wk.warn::after{content:"";position:absolute;top:4px;right:4px;width:6px;height:6px;border-radius:50%;background:var(--warn)}
+
+/* tables */
+table{width:100%;border-collapse:collapse}
+th{font:500 13px/18px var(--ui);text-transform:uppercase;letter-spacing:.04em;color:var(--ink-2);
+   text-align:left;padding:0 12px 10px;border-bottom:1px solid var(--line)}
+td{padding:11px 12px;border-bottom:1px solid rgb(221 225 219/.5)}
+tr:last-child td{border-bottom:0}
+.mono{font:400 13px/18px var(--mono)} .mono5{font:500 13px/18px var(--mono)}
+.num{text-align:right}
+input.fte{width:72px;height:36px;border:1px solid var(--line);border-radius:6px;
+  font:400 13px/18px var(--mono);padding:0 10px}
+input.fte:focus{outline:2px solid var(--action);outline-offset:2px;border-color:var(--action)}
+
+/* chips, banners, buttons */
+.chip{display:inline-block;font:500 12px/16px var(--ui);padding:3px 8px;border-radius:6px}
+.chip.ok{background:var(--ok-tint);color:var(--action)}
+.chip.warn{background:var(--warn-tint);color:var(--warn)}
+.chip.exc{background:var(--err-tint);color:var(--err)}
+.banner{border:1px solid var(--warn);background:var(--warn-tint);color:var(--warn);
+  border-radius:6px;padding:10px 14px;margin-bottom:16px}
+.btn{font:500 14px/20px var(--ui);border-radius:6px;padding:10px 16px;border:1px solid transparent;cursor:pointer}
+.btn.primary{background:var(--action);color:#fff}
+.btn.secondary{background:var(--surface);border-color:var(--line);color:var(--ink)}
+.btn.destructive{background:var(--surface);border-color:var(--line);color:var(--err)}
+.btn:focus-visible{outline:2px solid var(--action);outline-offset:2px}
+.row{display:flex;gap:12px;align-items:center}
+.spread{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
+.summaryline{font:400 14px/22px var(--ui)}
+.summaryline .mono5{font-size:14px}
+
+/* blocking sheet */
+.sheetwrap{position:relative}
+.sheet{position:absolute;right:0;top:0;width:420px;background:var(--surface);
+  border:1px solid var(--line);border-left:2px solid var(--line);border-radius:10px 0 0 10px;padding:24px}
+select,input[type=date]{height:36px;border:1px solid var(--line);border-radius:6px;font:400 13px/18px var(--mono);padding:0 10px;background:var(--surface);width:100%}
+label{font:500 13px/18px var(--ui);color:var(--ink-2);display:block;margin:14px 0 6px}
+.blocklist li{list-style:none;display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid rgb(221 225 219/.5)}
+@media (prefers-reduced-motion:no-preference){.btn,.wk,input.fte{transition:background-color .15s ease-out,border-color .15s ease-out,color .15s ease-out}}
+</style>
+</head>
+<body>
+
+<div class="frame-label">Screen 1 of 2 — Review step (auto-assign mode)</div>
+<div class="frame">
+  <nav class="rail">
+    <div class="wordmark">Term Scheduler</div>
+    <div class="step done"><span class="n">✓</span> Setup</div>
+    <div class="step done"><span class="n">✓</span> Upload</div>
+    <div class="step active"><span class="n">3</span> Review</div>
+    <div class="step"><span class="n">4</span> Results</div>
+    <div class="note">Runs in your browser. Files are never uploaded to a server.</div>
+  </nav>
+  <main class="main">
+    <h1>Review capacity</h1>
+    <p class="sub">Week 1 starts Monday 7 September 2026 · Auto-assign by availability</p>
+
+    <div class="ribbon" aria-label="Term structure">
+      <div class="blockgroup g1"><span>Block 1</span><div class="weeks"><div class="wk">1</div><div class="wk">2</div><div class="wk">3</div></div></div>
+      <div class="blockgroup"><span>&nbsp;</span><div class="weeks"><div class="wk dead" title="No meetings — excluded week">4</div></div></div>
+      <div class="blockgroup g2"><span>Block 2</span><div class="weeks"><div class="wk">5</div><div class="wk">6</div><div class="wk">7</div></div></div>
+      <div class="blockgroup"><span>&nbsp;</span><div class="weeks"><div class="wk dead" title="No meetings — excluded week">8</div></div></div>
+      <div class="blockgroup g3"><span>Block 3</span><div class="weeks"><div class="wk">9</div><div class="wk">10</div><div class="wk">11</div></div></div>
+      <div class="blockgroup"><span>&nbsp;</span><div class="weeks"><div class="wk dead" title="No meetings — excluded week">12</div></div></div>
+      <div class="blockgroup g4"><span>Block 4</span><div class="weeks"><div class="wk">13</div><div class="wk">14</div><div class="wk">15</div></div></div>
+    </div>
+
+    <div class="banner">Total capacity (57) is below the number of students (64). 7 students will be unassigned unless availability or FTE increases.</div>
+
+    <div class="card">
+      <div class="spread">
+        <div><h2>Coach capacity</h2><div class="desc" style="margin:0">FTE changes recalculate quotas immediately.</div></div>
+        <button class="btn secondary">Blocked weeks/dates</button>
+      </div>
+      <table>
+        <tr><th>Coach</th><th class="num">Valid slots</th><th class="num">Capacity</th><th>FTE</th><th class="num">Quota</th></tr>
+        <tr><td>Alex Coach</td><td class="mono num">9</td><td class="mono num">27</td><td><input class="fte" value="1.00"></td><td class="mono5 num">26</td></tr>
+        <tr><td>Priya Mentor</td><td class="mono num">7</td><td class="mono num">21</td><td><input class="fte" value="1.00"></td><td class="mono5 num">21</td></tr>
+        <tr><td>Sam Advisor</td><td class="mono num">3</td><td class="mono num">9</td><td><input class="fte" value="0.50"></td><td class="mono5 num">10</td></tr>
+      </table>
+    </div>
+
+    <div class="row" style="justify-content:flex-end"><button class="btn primary">Continue to results</button></div>
+  </main>
+</div>
+
+<div class="frame-label">Screen 2 of 2 — Results step, with blocking sheet open (Session 7)</div>
+<div class="frame">
+  <nav class="rail">
+    <div class="wordmark">Term Scheduler</div>
+    <div class="step done"><span class="n">✓</span> Setup</div>
+    <div class="step done"><span class="n">✓</span> Upload</div>
+    <div class="step done"><span class="n">✓</span> Review</div>
+    <div class="step active"><span class="n">4</span> Results</div>
+    <div class="note">Runs in your browser. Files are never uploaded to a server.</div>
+  </nav>
+  <main class="main sheetwrap">
+    <h1>Results</h1>
+    <p class="sub summaryline"><span class="mono5">62</span> of <span class="mono5">64</span> students scheduled · <span class="mono5">248</span> appointments · <span class="chip exc">2 exceptions</span></p>
+
+    <div class="card" style="max-width:620px">
+      <h2>Exceptions</h2>
+      <p class="desc">These single meetings could not be rebooked. The students' other meetings are unaffected.</p>
+      <table>
+        <tr><th>Student</th><th>Coach</th><th>Reason</th></tr>
+        <tr><td>Jane Doe <span class="mono">0031t00000AbCdE</span></td><td>Sam Advisor</td><td><span class="chip exc">No free slot in Block 3 — coach blocked</span></td></tr>
+        <tr><td>Ken Adeyemi <span class="mono">0031t00000FgHiJ</span></td><td>Sam Advisor</td><td><span class="chip exc">No free slot in Block 3 — coach blocked</span></td></tr>
+      </table>
+    </div>
+
+    <div class="card" style="max-width:620px">
+      <div class="spread"><h2>Appointments</h2><button class="btn primary">Export appointments</button></div>
+      <table>
+        <tr><th>Date</th><th>Time</th><th>Student</th><th>Coach</th><th>Wk</th><th>Moved from</th></tr>
+        <tr><td class="mono">2026-09-07</td><td class="mono">10:00</td><td>Jane Doe</td><td>Alex Coach</td><td class="mono num">1</td><td></td></tr>
+        <tr><td class="mono">2026-09-07</td><td class="mono">11:00</td><td>Ken Adeyemi</td><td>Alex Coach</td><td class="mono num">1</td><td></td></tr>
+        <tr><td class="mono">2026-11-09</td><td class="mono">10:00</td><td>Mia Chen</td><td>Priya Mentor</td><td class="mono num">10</td><td><span class="chip" style="background:var(--b3);color:var(--b3-deep)">wk 9</span></td></tr>
+      </table>
+    </div>
+
+    <aside class="sheet" aria-label="Blocked weeks and dates">
+      <h2>Blocked weeks/dates</h2>
+      <p class="desc">Meetings in a blocked week move to another week in the same block automatically.</p>
+      <label for="c">Coach</label>
+      <select id="c"><option>Sam Advisor</option></select>
+      <label>Blocked weeks — click to toggle</label>
+      <div class="weeks" style="flex-wrap:wrap">
+        <span class="g1" style="display:contents"><div class="wk">1</div><div class="wk">2</div><div class="wk">3</div></span><div class="wk dead">4</div>
+        <span class="g2" style="display:contents"><div class="wk">5</div><div class="wk">6</div><div class="wk">7</div></span><div class="wk dead">8</div>
+        <span class="g3" style="display:contents"><div class="wk blocked">9</div><div class="wk blocked">10</div><div class="wk blocked">11</div></span><div class="wk dead">12</div>
+        <span class="g4" style="display:contents"><div class="wk">13</div><div class="wk">14</div><div class="wk">15</div></span>
+      </div>
+      <label for="d">Or block a single date</label>
+      <input type="date" id="d">
+      <label>Current blocks</label>
+      <ul class="blocklist">
+        <li>Sam Advisor — weeks 9, 10, 11 <button class="btn destructive" style="padding:4px 10px">Remove</button></li>
+      </ul>
+    </aside>
+  </main>
+</div>
+</body>
+</html>
