@@ -625,6 +625,16 @@ input:focus {
 .chip-exception { background: var(--err-tint); color: var(--err); }
 .chip-scheduled { background: var(--b1); color: var(--action); }
 
+/* Neutral chip: the "Class" half of the bookings timeline (§12). Class
+   sessions are not a status and take no term-block hue — they are told apart
+   from coaching by their label and their outline, never by colour alone. */
+.chip-neutral {
+  background: var(--paper);
+  color: var(--ink-2);
+  border: 1px solid var(--line);
+  padding: 2px 7px;
+}
+
 .chip-wk-b1 { background: var(--b1); color: var(--b1-deep); }
 .chip-wk-b2 { background: var(--b2); color: var(--b2-deep); }
 .chip-wk-b3 { background: var(--b3); color: var(--b3-deep); }
@@ -1038,6 +1048,71 @@ input[type="number"] {
   flex: 1;
 }
 
+/* ---------- Bookings on Results (SPEC.md §12) ---------- */
+
+/* The view toggle is the same two-segment control as the mode toggle (§3.4):
+   two peers, never a switch. */
+.bookings-toggle {
+  margin-bottom: 16px;
+}
+
+.bookings-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.bookings-export {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-left: auto;
+  align-items: flex-end;
+  text-align: right;
+}
+
+.bookings-export .help-text {
+  margin: 0;
+  max-width: 34ch;
+}
+
+/* The booking tables carry a lot of columns; below their natural width the
+   table-wrap scrolls (§3.3) rather than letting dates and names wrap. */
+.bookings-table {
+  min-width: 900px;
+}
+
+.bookings-table td.mono,
+.bookings-table th {
+  white-space: nowrap;
+}
+
+/* Table captions name the table for screen readers without repeating the
+   heading on screen (§5: keyboard-complete, semantic structure). */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+input[type="search"] {
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  color: var(--ink);
+  font: 400 13px/18px var(--mono);
+}
+
 /* ---------- §5 Quality floor ---------- */
 
 :focus-visible {
@@ -1107,5 +1182,18 @@ input[type="number"] {
   .app-footer {
     left: 0;
     padding: 12px 24px;
+  }
+
+  /* The bookings controls stack, and the export button moves under them
+     rather than being pushed off the right edge (§5). */
+  .bookings-export {
+    margin-left: 0;
+    align-items: flex-start;
+    text-align: left;
+  }
+
+  .bookings-controls .field {
+    max-width: none;
+    flex: 1 1 220px;
   }
 }

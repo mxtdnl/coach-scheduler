@@ -155,6 +155,16 @@ Run after Session 8. Replace `SPEC.md` with the v1.4 version before starting.
 **Verify:** run auto-assign with several coaches and students and confirm the downloaded workbook has exactly the seven headers in order, one row per scheduled student (a student with four meetings appears once), Coach User ID identical to that coach's Coach SF ID, and every cell stored as text; confirm unassigned students are absent; switch to pre-allocated mode and confirm the card and button are not shown; change the appointment export mapping and confirm the batch upload is unchanged; tests.html all green.
 
 
+### Session 10 — Results booking views and the coach calendar (v1.5)
+
+Run after Session 9. Replace `SPEC.md` with the v1.5 version before starting.
+
+**Prompt:**
+
+> Read SPEC.md §14, §7.4, §9 and §15, plus §7.1, §11 and §4.4a for context. Add a read-only **Bookings** card to the Results step with a `By coach` / `By student` toggle: choosing a coach lists every meeting they have, chronologically, with student, date, times, meeting number, service name and class block; choosing a student shows their own class block's classes and their coaching meetings on one chronological timeline, with their assigned coach, or the scheduler's own reason if they are unassigned. Build both from the final appointment rows and the scheduler's `assignments`/`unassigned`/`exceptions` — no second copy of the schedule, no recalculated dates, no changes to the engine. Add `js/bookings.js` (pure view models), `js/ics.js` (an RFC 5545 serialiser: one VEVENT per meeting, CRLF, 75-octet folding, TEXT escaping, deterministic UIDs, UTC instants derived from the §7.1 values) and `js/zip.js` (a small stored-entry ZIP writer with CRC-32 and entry-name sanitising). Add an **Export coach calendar (.zip)** button to the coach view that downloads one `.ics` per scheduled meeting for the selected coach, bundled in `<coach-name>_calendar_YYYY-MM-DD_HHMM.zip`, disabled when no coach is selected or the coach has no meetings. Add the §15 tests and keep the existing tests green. Update SPEC.md, README.md, and BUILD_GUIDE.md. Commit and push.
+
+**Verify:** with several coaches and students, confirm the coach view lists only that coach's meetings in date order with sensible totals; confirm a student's timeline shows both classes and coaching and never another block's classes; confirm an unassigned student shows classes, no meetings and a reason; block a coach's week and confirm the moved meeting shows its new date and a "moved from week N" marker in both views and in the exported calendar; download a coach's ZIP, unzip it, and confirm one `.ics` per meeting, each with a single VEVENT whose start and end match the appointments export; confirm a coach with no meetings cannot export; tests.html all green.
+
 ---
 
 ## Part D — Ongoing use and future changes

@@ -71,6 +71,23 @@ import {
   COACH_ASSIGNMENT_HEADERS,
   COACH_ASSIGNMENT_CONSTANTS,
 } from './js/exporter.js';
+import {
+  buildCoachCalendarFiles,
+  buildCoachCalendarZip,
+  buildCoachCalendarFilename,
+} from './js/exporter.js';
+import { bookingCoaches, buildCoachBookings, buildStudentTimeline, filterStudents } from './js/bookings.js';
+import {
+  escapeIcsText,
+  foldIcsLine,
+  icsUtcStamp,
+  meetingUid,
+  meetingSummary,
+  buildMeetingIcs,
+  icsFileNameForMeeting,
+  isExportableMeeting,
+} from './js/ics.js';
+import { buildZip, crc32, sanitiseZipEntryName, dedupeEntryNames } from './js/zip.js';
 import { isXLSXAvailable } from './js/xlsx-loader.js';
 
 // ---- tiny assertion harness ----
@@ -1619,6 +1636,457 @@ testWithXLSX('an empty assignment list is refused rather than exported blank', (
     threw = e.message;
   }
   assert(threw.includes('no coach assignments'), `got: ${threw}`);
+});
+
+// ---- SPEC.md §14 — Results booking views, and §7.4 the coach calendar ----
+
+group('§14 — bookings fixture');
+
+// Two cohorts, three coaches, and every awkward case the views have to cope
+// with: a coach with no students, a student whose class block is unknown, a
+// student with no room left, and a meeting displaced by a blocked week.
+const BK_CLASSES = [
+  { classBlock: 'Block A', day: 'Monday', start: t('10:00'), end: t('11:00'), className: 'Maths' },
+  { classBlock: 'Block A', day: 'Wednesday', start: t('09:00'), end: t('10:00'), className: 'Physics' },
+  { classBlock: 'Block B', day: 'Tuesday', start: t('10:00'), end: t('11:00'), className: 'Chemistry, adv' },
+];
+const BK_BLOCKS = buildClassBlocks(BK_CLASSES);
+const BK_AVAILABILITY = [
+  avail('Coach A', 'Monday', '09:00', '12:00', 'C-A', 'a@example.com'),
+  avail('Coach A', 'Wednesday', '09:00', '12:00', 'C-A', 'a@example.com'),
+  avail("Coach B; O'Hara", 'Tuesday', '09:30', '12:30', 'C-B', 'b@example.com'),
+  avail('Coach C', 'Thursday', '09:00', '11:00', 'C-C', 'c@example.com'),
+];
+const BK_SLOTS = buildSlots(BK_AVAILABILITY, BK_BLOCKS);
+const BK_COACHES = ['Coach A', "Coach B; O'Hara", 'Coach C'];
+
+// Names deliberately carry the characters iCalendar has to escape.
+const BK_STUDENTS = [
+  { contactSfId: 'S1', studentName: "Ann O'Neill, Jr.", studentEmail: 'ann@example.com', classBlock: 'Block A' },
+  { contactSfId: 'S2', studentName: 'Bob; Smith\\Jones', studentEmail: 'bob@example.com', classBlock: 'Block B' },
+  { contactSfId: 'S3', studentName: 'Cara Díaz', studentEmail: 'cara@example.com', classBlock: 'Block A' },
+  { contactSfId: 'S4', studentName: 'Dan Blocked', studentEmail: 'dan@example.com', classBlock: 'Block Z' },
+  { contactSfId: 'S5', studentName: 'Eve Nospace', studentEmail: 'eve@example.com', classBlock: 'Block A' },
+];
+
+// Quotas are set by hand rather than by FTE so the fixture can state exactly
+// what it is testing: Coach C takes nobody, and there is no room for Eve.
+const BK_QUOTAS = { 'Coach A': 2, "Coach B; O'Hara": 1, 'Coach C': 0 };
+
+function bookingsRun() {
+  const { assignments, unassigned } = schedule(BK_STUDENTS, BK_SLOTS, 'auto', BK_QUOTAS, BK_COACHES, {
+    classBlocks: BK_BLOCKS,
+  });
+  const expanded = expandToAppointments(assignments, START_MONDAY, LONDON);
+  // Coach A is away in week 1, so one of their meetings is rebooked (§11.3).
+  const blocked = applyBlocks(expanded, [{ coach: 'Coach A', week: 1 }], BK_SLOTS, {
+    timeZone: LONDON,
+    startMonday: START_MONDAY,
+  });
+  return { assignments, unassigned, appointments: blocked.appointments, exceptions: blocked.exceptions };
+}
+
+const BK = bookingsRun();
+const BK_CONTEXT = {
+  appointments: BK.appointments,
+  assignments: BK.assignments,
+  unassigned: BK.unassigned,
+  exceptions: BK.exceptions,
+  classBlocks: BK_BLOCKS,
+  startMonday: START_MONDAY,
+};
+const studentById = (id) => BK_STUDENTS.find((s) => s.contactSfId === id);
+
+test('the fixture schedules three students, leaves two unassigned, and gives Coach C nobody', () => {
+  assertEqual(BK.assignments.length, 3, 'three students were assigned');
+  assertDeep(
+    BK.unassigned.map((u) => `${u.student.contactSfId}:${u.reason}`),
+    [`S4:${REASONS.CLASS_BLOCK_NOT_FOUND}`, `S5:${REASONS.INSUFFICIENT_CAPACITY}`],
+    'Dan has an unknown class block and Eve has no room'
+  );
+  assertEqual(BK.appointments.filter((row) => row.coachName === 'Coach C').length, 0, 'Coach C has no meetings');
+});
+
+group('§14.1 — coach booking view');
+
+test('a coach selection returns all and only that coach\u2019s meetings and students', () => {
+  const view = buildCoachBookings(BK.appointments, 'Coach A');
+  assert(view.rows.every((row) => row.coachName === 'Coach A'), 'every row belongs to the selected coach');
+  assertEqual(view.rows.length, BK.appointments.filter((r) => r.coachName === 'Coach A').length, 'no row is missing');
+  assertDeep(view.students.map((s) => s.contactSfId).sort(), ['S1', 'S2'], 'both of Coach A\u2019s students, and only those');
+  assertEqual(view.studentCount, 2, 'student total');
+  assertEqual(view.meetingCount, 8, 'four meetings each');
+  assert(!view.rows.some((row) => row.contactSfId === 'S3'), 'another coach\u2019s student is not listed');
+});
+
+test('coach bookings are sorted chronologically', () => {
+  const view = buildCoachBookings(BK.appointments, 'Coach A');
+  const keys = view.rows.map((row) => `${row.date} ${row.startTime}`);
+  assertDeep(keys, [...keys].sort(), 'rows run in date then start-time order');
+});
+
+test('the coach list offers every coach in the run, including one with no meetings', () => {
+  const offered = bookingCoaches(BK_COACHES, BK.appointments);
+  assertDeep(offered, BK_COACHES, 'all three coaches are selectable');
+  assertEqual(buildCoachBookings(BK.appointments, 'Coach C').meetingCount, 0, 'and Coach C\u2019s view is simply empty');
+});
+
+test('a blocked meeting is shown as the schedule actually rebooked it', () => {
+  const view = buildCoachBookings(BK.appointments, 'Coach A');
+  assert(!view.rows.some((row) => row.weekNumber === 1), 'nothing is left in the blocked week');
+  const moved = view.rows.filter((row) => row.rescheduledFromWeek !== '');
+  assertEqual(moved.length, 1, 'exactly one meeting was moved');
+  assertEqual(moved[0].rescheduledFromWeek, 1, 'and it says which week it came from');
+  assert(
+    moved[0] === BK.appointments.find((row) => row.rescheduledFromWeek !== ''),
+    'the view holds the schedule\u2019s own row, not a copy'
+  );
+});
+
+test('an empty or unknown coach selection returns an empty view rather than throwing', () => {
+  [null, undefined, '', 'Nobody At All'].forEach((selection) => {
+    const view = buildCoachBookings(BK.appointments, selection);
+    assertEqual(view.rows.length, 0, `no rows for ${String(selection)}`);
+    assertEqual(view.studentCount, 0, `no students for ${String(selection)}`);
+  });
+  assertEqual(buildCoachBookings(null, 'Coach A').meetingCount, 0, 'and no appointments at all is safe');
+});
+
+group('§14.2 — student booking view');
+
+test('a student selection names their assigned coach', () => {
+  assertEqual(buildStudentTimeline(studentById('S1'), BK_CONTEXT).coach, 'Coach A', 'S1\u2019s coach');
+  assertEqual(buildStudentTimeline(studentById('S3'), BK_CONTEXT).coach, "Coach B; O'Hara", 'S3\u2019s coach');
+});
+
+test('the timeline combines class sessions and coaching meetings', () => {
+  const view = buildStudentTimeline(studentById('S1'), BK_CONTEXT);
+  assertEqual(view.coachingCount, 4, 'four coaching meetings');
+  assertEqual(view.classCount, 2 * 15, 'two weekly classes across the 15 term weeks');
+  assert(view.entries.some((e) => e.type === 'class'), 'classes appear');
+  assert(view.entries.some((e) => e.type === 'coaching'), 'coaching appears');
+  const keys = view.entries.map((e) => `${e.date} ${e.startTime}`);
+  assertDeep(keys, [...keys].sort(), 'the combined timeline is chronological');
+});
+
+test('class events use the student\u2019s own class block', () => {
+  const view = buildStudentTimeline(studentById('S1'), BK_CONTEXT);
+  const names = [...new Set(view.entries.filter((e) => e.type === 'class').map((e) => e.label))].sort();
+  assertDeep(names, ['Maths', 'Physics'], 'Block A\u2019s classes');
+  assertEqual(view.classBlockName, 'Block A', 'and the block is named for the UI');
+});
+
+test('another block\u2019s classes never appear in a student\u2019s timeline', () => {
+  const view = buildStudentTimeline(studentById('S2'), BK_CONTEXT);
+  const names = [...new Set(view.entries.filter((e) => e.type === 'class').map((e) => e.label))];
+  assertDeep(names, ['Chemistry, adv'], 'only Block B\u2019s class');
+  assert(!names.includes('Maths'), 'Block A\u2019s Maths is not shown to a Block B student');
+  assertEqual(view.classCount, 15, 'one weekly class across the term');
+});
+
+test('coaching entries carry the coach, the meeting number and the service name', () => {
+  const view = buildStudentTimeline(studentById('S1'), BK_CONTEXT);
+  const coaching = view.entries.filter((e) => e.type === 'coaching');
+  assertDeep(coaching.map((e) => e.meetingNumber), [1, 2, 3, 4], 'meetings 1 to 4 in order');
+  assertDeep(coaching.map((e) => e.label), [1, 2, 3, 4].map(serviceNameFor), 'service names');
+  assert(coaching.every((e) => e.coachName === 'Coach A'), 'each names the coach');
+});
+
+test('an unassigned student gets their classes, a reason, and no invented meetings', () => {
+  const eve = buildStudentTimeline(studentById('S5'), BK_CONTEXT);
+  assertEqual(eve.coach, null, 'no coach');
+  assertEqual(eve.coachingCount, 0, 'no coaching meetings are fabricated');
+  assertEqual(eve.unassignedReason, REASONS.INSUFFICIENT_CAPACITY, 'the scheduler\u2019s own reason');
+  assertEqual(eve.classCount, 30, 'their known classes are still shown');
+
+  const dan = buildStudentTimeline(studentById('S4'), BK_CONTEXT);
+  assertEqual(dan.unassignedReason, REASONS.CLASS_BLOCK_NOT_FOUND, 'the unknown-block reason');
+  assertEqual(dan.classBlockKnown, false, 'the block is flagged as unknown');
+  assertEqual(dan.entries.length, 0, 'and no classes are guessed for a block that does not exist');
+});
+
+test('a student\u2019s rescheduled meeting is shown from the real appointment', () => {
+  const view = buildStudentTimeline(studentById('S1'), BK_CONTEXT);
+  const moved = view.entries.filter((e) => e.type === 'coaching' && e.rescheduledFromWeek !== '');
+  assertEqual(moved.length, 1, 'one moved meeting');
+  assertEqual(moved[0].appointment.rescheduledFromWeek, 1, 'carrying the week it came from');
+  assert(BK.appointments.includes(moved[0].appointment), 'and it is the schedule\u2019s own row');
+});
+
+test('no selection, and an unknown student, are safe', () => {
+  const empty = buildStudentTimeline(null, BK_CONTEXT);
+  assertEqual(empty.entries.length, 0, 'no entries');
+  assertEqual(empty.coach, null, 'no coach');
+  const stranger = buildStudentTimeline({ contactSfId: 'ZZ', studentName: 'Nobody' }, BK_CONTEXT);
+  assertEqual(stranger.coachingCount, 0, 'a student not in this run has no meetings');
+  assertEqual(stranger.classCount, 0, 'and no classes');
+});
+
+test('the student search matches name and Contact SF ID, and an empty query matches all', () => {
+  assertDeep(filterStudents(BK_STUDENTS, 'cara').map((s) => s.contactSfId), ['S3'], 'by name');
+  assertDeep(filterStudents(BK_STUDENTS, 's5').map((s) => s.contactSfId), ['S5'], 'by id, case-insensitively');
+  assertEqual(filterStudents(BK_STUDENTS, '').length, BK_STUDENTS.length, 'everyone');
+  assertEqual(filterStudents(BK_STUDENTS, 'zzz').length, 0, 'and no match is not an error');
+});
+
+test('the booking views stay correct after the schedule is rebuilt', () => {
+  const rebuilt = bookingsRun();
+  const before = buildCoachBookings(BK.appointments, 'Coach A');
+  const after = buildCoachBookings(rebuilt.appointments, 'Coach A');
+  assertDeep(
+    after.rows.map((r) => `${r.date} ${r.startTime} ${r.contactSfId} ${r.meetingNumber} ${r.rescheduledFromWeek}`),
+    before.rows.map((r) => `${r.date} ${r.startTime} ${r.contactSfId} ${r.meetingNumber} ${r.rescheduledFromWeek}`),
+    'the coach view is identical after a rebuild'
+  );
+  const student = buildStudentTimeline(studentById('S1'), { ...BK_CONTEXT, appointments: rebuilt.appointments, assignments: rebuilt.assignments });
+  assertEqual(student.coach, 'Coach A', 'and the student view still names the same coach');
+  assertEqual(student.coachingCount, 4, 'with the same meetings');
+});
+
+group('§7.4 — ICS serialisation');
+
+const BK_CAL_OPTIONS = { campusLabel: 'London', timeZone: LONDON, dtstamp: new Date(Date.UTC(2026, 7, 12, 9, 30, 0)) };
+const COACH_A_MEETINGS = BK.appointments.filter((row) => row.coachName === 'Coach A');
+
+test('text escaping covers backslashes, semicolons, commas and newlines', () => {
+  assertEqual(escapeIcsText('a,b'), 'a\\,b', 'comma');
+  assertEqual(escapeIcsText('a;b'), 'a\\;b', 'semicolon');
+  assertEqual(escapeIcsText('a\\b'), 'a\\\\b', 'backslash, escaped once and only once');
+  assertEqual(escapeIcsText('a\nb'), 'a\\nb', 'newline');
+  assertEqual(escapeIcsText('a\r\nb'), 'a\\nb', 'CRLF is one escaped newline');
+  assertEqual(escapeIcsText(null), '', 'nothing at all is an empty value');
+});
+
+test('special characters in student, coach and location values are escaped in the file', () => {
+  const meeting = COACH_A_MEETINGS.find((row) => row.contactSfId === 'S2');
+  const ics = buildMeetingIcs(meeting, { ...BK_CAL_OPTIONS, campusLabel: 'London, Bloomsbury; main' });
+  assert(ics.includes('SUMMARY:Bob\\; Smith\\\\Jones'), `escaped summary, got:\n${ics}`);
+  assert(ics.includes('LOCATION:London\\, Bloomsbury\\; main'), 'escaped location');
+  assert(!/SUMMARY:[^\r\n]*[^\\];/.test(ics), 'no bare semicolon survives in SUMMARY');
+});
+
+test('every line ends CRLF and long lines are folded at 75 octets', () => {
+  const ics = buildMeetingIcs(COACH_A_MEETINGS[0], BK_CAL_OPTIONS);
+  assert(ics.endsWith('END:VCALENDAR\r\n'), 'the file ends with a CRLF-terminated END:VCALENDAR');
+  assert(!/[^\r]\n/.test(ics), 'no bare LF anywhere');
+  const encoder = new TextEncoder();
+  ics.split('\r\n').filter(Boolean).forEach((line) => {
+    assert(encoder.encode(line).length <= 75, `line within 75 octets: ${line}`);
+  });
+  const folded = foldIcsLine(`DESCRIPTION:${'é'.repeat(60)}`);
+  assert(folded.includes('\r\n '), 'a long line is folded with a leading space');
+  folded.split('\r\n').forEach((line) => assert(encoder.encode(line).length <= 75, 'each folded piece fits'));
+  assertEqual(folded.split('\r\n').map((l, i) => (i ? l.slice(1) : l)).join(''), `DESCRIPTION:${'é'.repeat(60)}`, 'unfolding restores the value');
+});
+
+test('each .ics holds exactly one VEVENT inside one VCALENDAR', () => {
+  COACH_A_MEETINGS.forEach((meeting) => {
+    const ics = buildMeetingIcs(meeting, BK_CAL_OPTIONS);
+    assertEqual((ics.match(/BEGIN:VEVENT/g) || []).length, 1, 'one BEGIN:VEVENT');
+    assertEqual((ics.match(/END:VEVENT/g) || []).length, 1, 'one END:VEVENT');
+    assertEqual((ics.match(/BEGIN:VCALENDAR/g) || []).length, 1, 'one calendar');
+    ['VERSION:2.0', 'PRODID:', 'UID:', 'DTSTAMP:', 'DTSTART:', 'DTEND:', 'SUMMARY:', 'DESCRIPTION:', 'LOCATION:'].forEach(
+      (property) => assert(ics.includes(property), `${property} is present`)
+    );
+  });
+});
+
+test('DTSTART and DTEND are the appointment\u2019s own instants, in UTC', () => {
+  const meeting = COACH_A_MEETINGS[0];
+  const ics = buildMeetingIcs(meeting, BK_CAL_OPTIONS);
+  assert(ics.includes(`DTSTART:${icsUtcStamp(meeting.startDateTime)}`), 'DTSTART matches the schedule');
+  assert(ics.includes(`DTEND:${icsUtcStamp(meeting.endDateTime)}`), 'DTEND matches the schedule');
+  // September in London is BST, so 09:00 local is 08:00Z — the same instant
+  // the appointments export writes as +01:00.
+  assertEqual(icsUtcStamp('2026-09-14T09:00:00+01:00'), '20260914T080000Z', 'BST start');
+  assertEqual(icsUtcStamp('2026-12-07T09:00:00+00:00'), '20261207T090000Z', 'GMT start, after the clocks change');
+  assertEqual(icsUtcStamp('2026-09-14T09:00:00-04:00'), '20260914T130000Z', 'a Boston-style offset');
+  assertEqual(new Date(Date.parse(meeting.endDateTime) - Date.parse(meeting.startDateTime)).getTime(), 3600000, 'still 60 minutes');
+});
+
+test('the event carries the student, coach and campus context', () => {
+  const meeting = COACH_A_MEETINGS.find((row) => row.contactSfId === 'S1');
+  const ics = buildMeetingIcs(meeting, BK_CAL_OPTIONS);
+  assert(ics.includes(escapeIcsText(meeting.studentName)), 'the student name is in the file');
+  assert(ics.includes(`SUMMARY:${escapeIcsText(meetingSummary(meeting))}`), 'the summary names the student and the meeting');
+  assert(ics.includes(escapeIcsText('Coach: Coach A')), 'the coach is named in the description');
+  assert(ics.includes('LOCATION:London'), 'the campus is the location');
+  assert(ics.includes(`X-WR-TIMEZONE:${LONDON}`), 'the campus zone travels with the calendar');
+  assert(ics.includes('Class block: Block A'), 'the student\u2019s class block is in the description');
+});
+
+test('UIDs are unique across a coach\u2019s meetings and deterministic', () => {
+  const uids = COACH_A_MEETINGS.map(meetingUid);
+  assertEqual(new Set(uids).size, uids.length, 'no two meetings share a UID');
+  assertDeep(COACH_A_MEETINGS.map(meetingUid), uids, 'the same meeting always gives the same UID');
+  assert(uids.every((uid) => uid.includes('@')), 'each UID is globally scoped');
+  const other = buildCoachBookings(BK.appointments, "Coach B; O'Hara").rows.map(meetingUid);
+  assertEqual(new Set([...uids, ...other]).size, uids.length + other.length, 'and UIDs do not collide across coaches');
+});
+
+test('a meeting with no usable date and time is not exportable', () => {
+  assertEqual(isExportableMeeting({ startDateTime: 'not a date', endDateTime: 'x' }), false, 'unreadable');
+  assertEqual(isExportableMeeting(null), false, 'nothing');
+  assertEqual(isExportableMeeting(COACH_A_MEETINGS[0]), true, 'a real meeting');
+});
+
+group('§7.4 — ZIP packaging');
+
+/** Reads a stored-only archive back: entry names, contents and CRC check. */
+function readZipEntries(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const decoder = new TextDecoder();
+  const entries = [];
+  let offset = 0;
+  while (offset + 4 <= bytes.length && view.getUint32(offset, true) === 0x04034b50) {
+    const method = view.getUint16(offset + 8, true);
+    const crc = view.getUint32(offset + 14, true);
+    const size = view.getUint32(offset + 22, true);
+    const nameLength = view.getUint16(offset + 26, true);
+    const extraLength = view.getUint16(offset + 28, true);
+    const name = decoder.decode(bytes.subarray(offset + 30, offset + 30 + nameLength));
+    const dataStart = offset + 30 + nameLength + extraLength;
+    const data = bytes.subarray(dataStart, dataStart + size);
+    entries.push({ name, method, crc, crcOk: crc32(data) === crc, content: decoder.decode(data) });
+    offset = dataStart + size;
+  }
+  // The end-of-central-directory record states how many entries there are.
+  const eocd = bytes.length - 22;
+  const declared = view.getUint32(eocd, true) === 0x06054b50 ? view.getUint16(eocd + 10, true) : -1;
+  return { entries, declared };
+}
+
+const COACH_A_ZIP = buildCoachCalendarZip(BK.appointments, 'Coach A', { ...BK_CAL_OPTIONS, now: new Date(2026, 7, 12, 14, 30) });
+const COACH_A_ARCHIVE = readZipEntries(COACH_A_ZIP.bytes);
+
+test('the archive is a real ZIP: signatures, entry count and checksums agree', () => {
+  assertEqual(COACH_A_ZIP.bytes[0], 0x50, 'starts with PK');
+  assertEqual(COACH_A_ZIP.bytes[1], 0x4b, 'starts with PK');
+  assertEqual(COACH_A_ARCHIVE.declared, COACH_A_ARCHIVE.entries.length, 'the central directory count matches');
+  assert(COACH_A_ARCHIVE.entries.every((entry) => entry.crcOk), 'every entry\u2019s CRC-32 checks out');
+  assert(COACH_A_ARCHIVE.entries.every((entry) => entry.method === 0), 'entries are stored, as declared');
+});
+
+test('the ZIP holds exactly one .ics per scheduled meeting for the selected coach', () => {
+  assertEqual(COACH_A_ARCHIVE.entries.length, COACH_A_MEETINGS.length, 'one file per meeting, and no extras');
+  assertEqual(COACH_A_ARCHIVE.entries.length, 8, 'two students × four meetings');
+  assert(COACH_A_ARCHIVE.entries.every((entry) => entry.name.endsWith('.ics')), 'every entry is an .ics');
+  const events = COACH_A_ARCHIVE.entries.reduce((sum, entry) => sum + (entry.content.match(/BEGIN:VEVENT/g) || []).length, 0);
+  assertEqual(events, COACH_A_MEETINGS.length, 'one VEVENT per meeting overall');
+});
+
+test('no other coach\u2019s meetings are in the archive', () => {
+  const uids = new Set(COACH_A_MEETINGS.map(meetingUid));
+  COACH_A_ARCHIVE.entries.forEach((entry) => {
+    const uid = /UID:(.+)\r\n/.exec(entry.content)[1];
+    assert(uids.has(uid), `${entry.name} belongs to Coach A`);
+  });
+  assert(!COACH_A_ARCHIVE.entries.some((entry) => entry.content.includes('Cara')), 'Coach B\u2019s student is absent');
+  assert(
+    COACH_A_ARCHIVE.entries.every((entry) => entry.content.includes('Coach: Coach A')),
+    'every event names the selected coach'
+  );
+});
+
+test('the archive holds no meeting the schedule does not contain', () => {
+  const scheduled = new Set(COACH_A_MEETINGS.map((row) => `${row.date} ${row.startTime} ${row.contactSfId}`));
+  assertEqual(COACH_A_ARCHIVE.entries.length, scheduled.size, 'as many files as distinct scheduled meetings');
+  // The blocked week is gone from the schedule, so it is gone from the archive.
+  const week1 = BK.appointments.filter((row) => row.coachName === 'Coach A' && row.weekNumber === 1);
+  assertEqual(week1.length, 0, 'the blocked week holds nothing');
+  assert(
+    !COACH_A_ARCHIVE.entries.some((entry) => entry.content.includes(`DTSTART:${icsUtcStamp(isoAt(2026, 9, 7, '09:00', LONDON))}`)),
+    'and no event was invented for it'
+  );
+});
+
+test('file names are readable, deterministic and collision-safe', () => {
+  const names = COACH_A_ARCHIVE.entries.map((entry) => entry.name);
+  assertEqual(new Set(names).size, names.length, 'no two entries share a name');
+  assert(/^\d{4}-\d{2}-\d{2}_\d{4}_[a-z0-9-]+_meeting-\d\.ics$/.test(names[0]), `date_time_student_meeting: ${names[0]}`);
+  assertDeep(
+    buildCoachCalendarFiles(BK.appointments, 'Coach A', BK_CAL_OPTIONS).map((f) => f.name),
+    names,
+    'the same schedule always produces the same names'
+  );
+  // Two meetings that would produce the same name keep both files.
+  const twin = { ...COACH_A_MEETINGS[0] };
+  assertDeep(
+    dedupeEntryNames(['a.ics', 'a.ics', 'a.ics', 'b.ics']),
+    ['a.ics', 'a_2.ics', 'a_3.ics', 'b.ics'],
+    'collisions are suffixed rather than overwritten'
+  );
+  assertEqual(icsFileNameForMeeting(twin), icsFileNameForMeeting(COACH_A_MEETINGS[0]), 'the raw name is deterministic');
+});
+
+test('a ZIP entry name can never escape the archive', () => {
+  assertEqual(sanitiseZipEntryName('../../etc/passwd'), 'etc-passwd', 'no traversal, no absolute path');
+  assertEqual(sanitiseZipEntryName('C:\\Windows\\evil.ics'), 'C-Windows-evil.ics', 'no drive letters or backslashes');
+  assertEqual(sanitiseZipEntryName('   '), 'file', 'nothing usable falls back');
+  assertEqual(sanitiseZipEntryName('.hidden'), 'hidden', 'no leading dot');
+  const zipped = readZipEntries(buildZip([{ name: '../evil.ics', data: 'X' }]));
+  assertEqual(zipped.entries[0].name, 'evil.ics', 'and the sanitised name is what lands in the archive');
+});
+
+test('the ZIP filename names the coach and the generation time', () => {
+  assertEqual(
+    buildCoachCalendarFilename("Coach B; O'Hara", new Date(2026, 7, 12, 14, 30)),
+    'coach-b-o-hara_calendar_2026-08-12_1430.zip',
+    'sanitised coach name plus timestamp'
+  );
+  assertEqual(COACH_A_ZIP.filename, 'coach-a_calendar_2026-08-12_1430.zip', 'the archive built above');
+});
+
+test('a coach with no meetings produces no archive at all', () => {
+  assertEqual(buildCoachCalendarFiles(BK.appointments, 'Coach C', BK_CAL_OPTIONS).length, 0, 'no files to bundle');
+  let threw = '';
+  try {
+    buildCoachCalendarZip(BK.appointments, 'Coach C', BK_CAL_OPTIONS);
+  } catch (e) {
+    threw = e.message;
+  }
+  assert(threw.includes('nothing to export'), `an empty archive is refused: ${threw}`);
+
+  threw = '';
+  try {
+    buildCoachCalendarZip(BK.appointments, '', BK_CAL_OPTIONS);
+  } catch (e) {
+    threw = e.message;
+  }
+  assert(threw.includes('Choose a coach'), `no selection is refused: ${threw}`);
+
+  threw = '';
+  try {
+    buildZip([]);
+  } catch (e) {
+    threw = e.message;
+  }
+  assert(threw.includes('at least one file'), `an empty ZIP is refused: ${threw}`);
+});
+
+test('selecting a coach with meetings is what enables the export control', () => {
+  // The Results card enables its button on exactly this condition, so the rule
+  // is asserted here without a DOM: nothing selected or nothing scheduled means
+  // no export.
+  const enabledFor = (coach) => buildCoachCalendarFiles(BK.appointments, coach, BK_CAL_OPTIONS).length > 0;
+  assertEqual(enabledFor(null), false, 'no coach selected');
+  assertEqual(enabledFor('Coach C'), false, 'a coach with no meetings');
+  assertEqual(enabledFor('Coach A'), true, 'a coach with meetings');
+  assertEqual(enabledFor("Coach B; O'Hara"), true, 'including one whose name needs escaping');
+});
+
+test('the export reads the schedule without changing it', () => {
+  const before = JSON.stringify(BK.appointments.map((row) => ({ ...row, dateValue: row.dateValue.getTime() })));
+  buildCoachCalendarZip(BK.appointments, 'Coach A', BK_CAL_OPTIONS);
+  const after = JSON.stringify(BK.appointments.map((row) => ({ ...row, dateValue: row.dateValue.getTime() })));
+  assertEqual(after, before, 'the appointment rows are untouched');
+});
+
+test('the §7.1 appointments export is unaffected by the calendar export', () => {
+  const { columns, rows } = buildPreviewRows(BK.appointments, getDefaultMapping(), 5);
+  assertEqual(columns[0].header, 'Student Name', 'the default columns are unchanged');
+  assertEqual(rows.length, 5, 'and still preview the appointments');
+  assert(buildExportFilename(new Date(2026, 7, 12, 14, 30)).startsWith('appointments_'), 'as is its filename');
 });
 
 // ---- render ----
