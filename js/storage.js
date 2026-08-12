@@ -5,6 +5,7 @@
 const KEYS = {
   START_DATE: 'coachScheduler.startDate',
   MODE: 'coachScheduler.mode',
+  EXPORT_MAPPING: 'coachScheduler.exportMapping',
 };
 
 export function getStartDate() {
@@ -21,4 +22,20 @@ export function getMode() {
 
 export function setMode(mode) {
   localStorage.setItem(KEYS.MODE, mode);
+}
+
+/** The customisable export mapping (SPEC.md §7.2), or null if unset/invalid. */
+export function getExportMapping() {
+  const raw = localStorage.getItem(KEYS.EXPORT_MAPPING);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+export function setExportMapping(mapping) {
+  localStorage.setItem(KEYS.EXPORT_MAPPING, JSON.stringify(mapping));
 }

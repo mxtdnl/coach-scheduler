@@ -1,9 +1,11 @@
 // UI wiring, state, step flow (SPEC.md §6).
-// Review and results are placeholders until scheduler.js / exporter.js are
-// wired up in a later session. Upload parsing/validation is implemented
-// here against parse.js.
+// Review (FTE editor, capacity table) is still a placeholder for a later
+// session; auto mode here uses the §5.1 default of 1.00 FTE per coach until
+// it exists. Results is wired to scheduler.js and exporter.js so the
+// appointment preview and export (§7) work end to end. Upload
+// parsing/validation is implemented here against parse.js.
 
-import { getStartDate, setStartDate, getMode, setMode } from './storage.js';
+import { getStartDate, setStartDate, getMode, setMode, getExportMapping, setExportMapping } from './storage.js';
 import { renderTermRibbon } from './ribbon.js';
 import {
   parseClassSchedule,
@@ -12,6 +14,8 @@ import {
   parsePairings,
   checkPairingsReferences,
 } from './parse.js';
+import { buildSlots, computeQuotas, schedule as scheduleAppointments, expandToAppointments } from './scheduler.js';
+import { getDefaultMapping, createConstantColumn, buildPreviewRows, exportAppointments, FIELD_LABELS } from './exporter.js';
 
 const STEPS = ['setup', 'upload', 'review', 'results'];
 
@@ -30,6 +34,8 @@ const state = {
   startDate: getStartDate() || null, // ISO yyyy-mm-dd, Monday-normalised
   mode: getMode() || 'auto',
   uploads: { classSchedule: null, coachAvailability: null, studentList: null, pairings: null },
+  exportMapping: getExportMapping() || getDefaultMapping(),
+  results: null, // { studentCount, scheduledCount, appointments, unassigned } or null until inputs are ready
 };
 
 const startDateInput = document.getElementById('start-date-input');
@@ -83,12 +89,15 @@ function handleStartDateChange() {
   } else {
     dateNotice.hidden = true;
   }
+
+  refreshResults();
 }
 
 function handleModeChange(mode) {
   state.mode = mode;
   setMode(mode);
   pairingsUploadCard.hidden = mode !== 'pre-allocated';
+  refreshResults();
 }
 
 function renderStep() {
@@ -237,6 +246,8 @@ async function handleFileForKey(key, file) {
   if (key === 'studentList' || key === 'coachAvailability') {
     renderUploadResult('pairings');
   }
+
+  refreshResults();
 }
 
 function clearAllUploads() {
@@ -246,6 +257,7 @@ function clearAllUploads() {
     fileInput.value = '';
     renderUploadResult(key);
   });
+  refreshResults();
 }
 
 function setupUpload(key) {
@@ -271,6 +283,267 @@ function setupUpload(key) {
     fileInput.files = event.dataTransfer.files;
     handleFileForKey(key, file);
   });
+}
+
+// ---- Results step ----
+//
+// Wires app.js to scheduler.js so the Results step and the exporter have
+// real appointments to show. There is no FTE editor yet (that belongs to
+// the Review step's coach-capacity table), so auto mode uses the spec
+// default of 1.00 FTE for every coach (SPEC.md §5.1) until one exists.
+
+/** Rows for an upload, or null if it hasn't been provided or failed validation. */
+function getUsableUploadRows(key) {
+  const upload = state.uploads[key];
+  if (!upload || upload.result.errors.length > 0) return null;
+  return upload.result.rows;
+}
+
+function computeResults() {
+  const classRows = getUsableUploadRows('classSchedule');
+  const availabilityRows = getUsableUploadRows('coachAvailability');
+  const studentRows = getUsableUploadRows('studentList');
+  const pairingsRows = getUsableUploadRows('pairings');
+
+  const ready =
+    !!state.startDate &&
+    classRows !== null &&
+    availabilityRows !== null &&
+    studentRows !== null &&
+    (state.mode !== 'pre-allocated' || pairingsRows !== null);
+
+  if (!ready) {
+    state.results = null;
+    return;
+  }
+
+  const slots = buildSlots(availabilityRows, classRows);
+
+  const coachOrder = [];
+  availabilityRows.forEach((row) => {
+    if (!coachOrder.includes(row.coachName)) coachOrder.push(row.coachName);
+  });
+
+  const slotCounts = {};
+  slots.forEach((slot) => {
+    slotCounts[slot.coach] = (slotCounts[slot.coach] || 0) + 1;
+  });
+
+  let assignments;
+  let unassigned;
+  if (state.mode === 'pre-allocated') {
+    ({ assignments, unassigned } = scheduleAppointments(studentRows, slots, 'pre-allocated', pairingsRows, coachOrder));
+  } else {
+    const fte = {};
+    coachOrder.forEach((name) => {
+      fte[name] = 1;
+    });
+    const quotas = computeQuotas(coachOrder, fte, studentRows.length, slotCounts);
+    ({ assignments, unassigned } = scheduleAppointments(studentRows, slots, 'auto', quotas));
+  }
+
+  const appointments = expandToAppointments(assignments, state.startDate);
+
+  state.results = {
+    studentCount: studentRows.length,
+    scheduledCount: studentRows.length - unassigned.length,
+    appointments,
+    unassigned,
+  };
+}
+
+function renderResults() {
+  const emptyEl = document.getElementById('results-empty');
+  const summaryEl = document.getElementById('results-summary');
+  const unassignedCard = document.getElementById('unassigned-card');
+  const appointmentsCard = document.getElementById('appointments-card');
+  const exportBtn = document.getElementById('export-btn');
+
+  if (!state.results) {
+    emptyEl.hidden = false;
+    summaryEl.hidden = true;
+    unassignedCard.hidden = true;
+    appointmentsCard.hidden = true;
+    return;
+  }
+
+  const { studentCount, scheduledCount, appointments, unassigned } = state.results;
+
+  emptyEl.hidden = true;
+  summaryEl.hidden = false;
+  const unassignedChip =
+    unassigned.length > 0 ? ` · <span class="chip chip-exception">${unassigned.length} unassigned</span>` : '';
+  summaryEl.innerHTML =
+    `<span class="mono-500">${scheduledCount}</span> of <span class="mono-500">${studentCount}</span> students scheduled · ` +
+    `<span class="mono-500">${appointments.length}</span> appointments${unassignedChip}`;
+
+  unassignedCard.hidden = unassigned.length === 0;
+  if (unassigned.length > 0) {
+    document.getElementById('unassigned-tbody').innerHTML = unassigned
+      .map(
+        ({ student, reason }) =>
+          `<tr><td>${escapeHtml(student.studentName)} <span class="mono">${escapeHtml(student.contactSfId)}</span></td>` +
+          `<td><span class="chip chip-exception">${escapeHtml(reason)}</span></td></tr>`
+      )
+      .join('');
+  }
+
+  appointmentsCard.hidden = false;
+
+  const { columns, rows } = buildPreviewRows(appointments, state.exportMapping, 50);
+  exportBtn.disabled = appointments.length === 0 || columns.length === 0;
+  const theadRow = document.getElementById('preview-thead-row');
+  const tbody = document.getElementById('preview-tbody');
+  if (columns.length === 0) {
+    theadRow.innerHTML = '<th>&nbsp;</th>';
+    tbody.innerHTML = '<tr><td class="table-empty">All columns are excluded. Include at least one in Export settings.</td></tr>';
+  } else {
+    theadRow.innerHTML = columns.map((col) => `<th>${escapeHtml(col.header || '(untitled)')}</th>`).join('');
+    tbody.innerHTML = rows
+      .map((cells) => `<tr>${cells.map((value) => `<td class="mono">${escapeHtml(String(value))}</td>`).join('')}</tr>`)
+      .join('');
+  }
+}
+
+function refreshResults() {
+  computeResults();
+  renderResults();
+}
+
+// ---- Export settings (SPEC.md §7.2) ----
+
+function persistExportMapping() {
+  setExportMapping(state.exportMapping);
+}
+
+function moveMappingColumn(index, direction) {
+  const newIndex = index + direction;
+  if (newIndex < 0 || newIndex >= state.exportMapping.length) return;
+  const [col] = state.exportMapping.splice(index, 1);
+  state.exportMapping.splice(newIndex, 0, col);
+  persistExportMapping();
+  renderMappingEditor();
+  renderResults();
+}
+
+function removeMappingColumn(index) {
+  state.exportMapping.splice(index, 1);
+  persistExportMapping();
+  renderMappingEditor();
+  renderResults();
+}
+
+function renderMappingEditor() {
+  const tbody = document.getElementById('mapping-tbody');
+  tbody.innerHTML = '';
+
+  state.exportMapping.forEach((col, index) => {
+    const tr = document.createElement('tr');
+
+    const orderTd = document.createElement('td');
+    const upBtn = document.createElement('button');
+    upBtn.type = 'button';
+    upBtn.className = 'icon-btn';
+    upBtn.textContent = '↑';
+    upBtn.setAttribute('aria-label', `Move "${col.header || 'column'}" up`);
+    upBtn.disabled = index === 0;
+    upBtn.addEventListener('click', () => moveMappingColumn(index, -1));
+    const downBtn = document.createElement('button');
+    downBtn.type = 'button';
+    downBtn.className = 'icon-btn';
+    downBtn.textContent = '↓';
+    downBtn.setAttribute('aria-label', `Move "${col.header || 'column'}" down`);
+    downBtn.disabled = index === state.exportMapping.length - 1;
+    downBtn.addEventListener('click', () => moveMappingColumn(index, 1));
+    orderTd.append(upBtn, downBtn);
+
+    const includeTd = document.createElement('td');
+    const includeCheckbox = document.createElement('input');
+    includeCheckbox.type = 'checkbox';
+    includeCheckbox.checked = col.included;
+    includeCheckbox.setAttribute('aria-label', `Include "${col.header || 'column'}" in the export`);
+    includeCheckbox.addEventListener('change', () => {
+      col.included = includeCheckbox.checked;
+      persistExportMapping();
+      renderResults();
+    });
+    includeTd.appendChild(includeCheckbox);
+
+    const headerTd = document.createElement('td');
+    const headerInput = document.createElement('input');
+    headerInput.type = 'text';
+    headerInput.value = col.header;
+    headerInput.setAttribute('aria-label', 'Column header');
+    headerInput.addEventListener('input', () => {
+      col.header = headerInput.value;
+      persistExportMapping();
+      renderResults();
+    });
+    headerTd.appendChild(headerInput);
+
+    const valueTd = document.createElement('td');
+    if (col.type === 'constant') {
+      const valueInput = document.createElement('input');
+      valueInput.type = 'text';
+      valueInput.value = col.value ?? '';
+      valueInput.setAttribute('aria-label', 'Fixed value for every row');
+      valueInput.addEventListener('input', () => {
+        col.value = valueInput.value;
+        persistExportMapping();
+        renderResults();
+      });
+      valueTd.appendChild(valueInput);
+    } else {
+      const label = document.createElement('span');
+      label.className = 'mono field-source';
+      label.textContent = FIELD_LABELS[col.field] || col.field;
+      valueTd.appendChild(label);
+    }
+
+    const removeTd = document.createElement('td');
+    if (col.type === 'constant') {
+      const removeBtn = document.createElement('button');
+      removeBtn.type = 'button';
+      removeBtn.className = 'btn btn-destructive btn-small';
+      removeBtn.textContent = 'Remove';
+      removeBtn.addEventListener('click', () => removeMappingColumn(index));
+      removeTd.appendChild(removeBtn);
+    }
+
+    tr.append(orderTd, includeTd, headerTd, valueTd, removeTd);
+    tbody.appendChild(tr);
+  });
+}
+
+function setupExportSettings() {
+  const toggleBtn = document.getElementById('export-settings-toggle');
+  const body = document.getElementById('export-settings-body');
+  toggleBtn.addEventListener('click', () => {
+    const expanded = toggleBtn.getAttribute('aria-expanded') === 'true';
+    toggleBtn.setAttribute('aria-expanded', String(!expanded));
+    body.hidden = expanded;
+  });
+
+  document.getElementById('add-constant-btn').addEventListener('click', () => {
+    state.exportMapping.push(createConstantColumn('New column', ''));
+    persistExportMapping();
+    renderMappingEditor();
+    renderResults();
+  });
+
+  document.getElementById('reset-mapping-btn').addEventListener('click', () => {
+    state.exportMapping = getDefaultMapping();
+    persistExportMapping();
+    renderMappingEditor();
+    renderResults();
+  });
+
+  document.getElementById('export-btn').addEventListener('click', () => {
+    if (!state.results || state.results.appointments.length === 0) return;
+    exportAppointments(state.results.appointments, state.exportMapping);
+  });
+
+  renderMappingEditor();
 }
 
 function init() {
@@ -304,6 +577,9 @@ function init() {
 
   UPLOAD_KEYS.forEach(setupUpload);
   document.getElementById('clear-uploads-btn').addEventListener('click', clearAllUploads);
+
+  setupExportSettings();
+  refreshResults();
 
   renderStep();
 }
