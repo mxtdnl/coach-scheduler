@@ -13,6 +13,10 @@ import { describeError } from './errors.js';
 const DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const DAY_ABBREVIATIONS = { mon: 'Monday', tue: 'Tuesday', wed: 'Wednesday', thu: 'Thursday', fri: 'Friday', sat: 'Saturday', sun: 'Sunday' };
 const TIME_PATTERN = /^(\d{1,2}):(\d{2})$/;
+// Deliberately permissive: this catches the real mistakes (a name in the
+// email column, a missing @, a stray space) without rejecting the valid but
+// unusual addresses a stricter pattern would.
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 function addIssue(list, file, row, message) {
   list.push({ file, row, message });
@@ -139,6 +143,31 @@ async function parseSheet(file, requiredColumns, parseRow) {
   return { rows, errors, warnings };
 }
 
+/**
+ * A required free-text cell: present, non-blank, trimmed. Returns null (and
+ * records a named error) when the cell is empty. Every export column is a
+ * hard requirement (SPEC.md §3, §7.1), so this is the common case.
+ */
+function requiredText(raw, headerIndex, columnName, rowNumber, fileName, errors) {
+  const value = raw[headerIndex[columnName.toLowerCase()]];
+  if (isBlank(value)) {
+    addIssue(errors, fileName, rowNumber, `Missing ${columnName} value.`);
+    return null;
+  }
+  return String(value).trim();
+}
+
+/** As requiredText, plus a shape check so a non-address never reaches the export. */
+function requiredEmail(raw, headerIndex, columnName, rowNumber, fileName, errors) {
+  const value = requiredText(raw, headerIndex, columnName, rowNumber, fileName, errors);
+  if (value === null) return null;
+  if (!EMAIL_PATTERN.test(value)) {
+    addIssue(errors, fileName, rowNumber, `"${value}" is not a valid ${columnName} — expected an address like name@example.com.`);
+    return null;
+  }
+  return value;
+}
+
 function parseDayAndTimeFields(raw, rowNumber, headerIndex, fileName, errors) {
   const dayCol = headerIndex['day'];
   const startCol = headerIndex['start time'];
@@ -203,40 +232,75 @@ export async function parseClassSchedule(file) {
   });
 }
 
-export async function parseCoachAvailability(file) {
-  return parseSheet(file, ['Coach Name', 'Day', 'Start Time', 'End Time'], (raw, rowNumber, headerIndex, fileName, errors) => {
-    const coachNameCol = headerIndex['coach name'];
-    const coachNameRaw = raw[coachNameCol];
-    if (isBlank(coachNameRaw)) {
-      addIssue(errors, fileName, rowNumber, 'Missing Coach Name value.');
-      return null;
+/**
+ * Coach identity (SF ID, email) repeats on every availability row for a
+ * coach, so the file can contradict itself. Taking the first value silently
+ * would put an arbitrary one of two addresses into the export, so a coach
+ * whose rows disagree is a named error instead (SPEC.md §8).
+ */
+function checkCoachConsistency(fileName, rows, errors) {
+  const seen = new Map(); // coach name → { coachSfId, coachEmail, row }
+  rows.forEach((row) => {
+    const first = seen.get(row.coachName);
+    if (!first) {
+      seen.set(row.coachName, row);
+      return;
     }
-    const timing = parseDayAndTimeFields(raw, rowNumber, headerIndex, fileName, errors);
-    if (!timing) return null;
-    const coachIdCol = headerIndex['coach id'];
-    const coachId = coachIdCol !== undefined ? String(raw[coachIdCol] ?? '').trim() : '';
-    return { coachName: String(coachNameRaw).trim(), coachId, day: timing.day, start: timing.start, end: timing.end };
+    [
+      ['Coach SF ID', 'coachSfId'],
+      ['Coach Email', 'coachEmail'],
+    ].forEach(([label, field]) => {
+      if (row[field] !== first[field]) {
+        addIssue(
+          errors,
+          fileName,
+          row._row,
+          `Coach "${row.coachName}" has two different ${label} values: "${first[field]}" (row ${first._row}) and "${row[field]}" (row ${row._row}).`
+        );
+      }
+    });
   });
 }
 
+export async function parseCoachAvailability(file) {
+  const result = await parseSheet(
+    file,
+    ['Coach Name', 'Coach SF ID', 'Coach Email', 'Day', 'Start Time', 'End Time'],
+    (raw, rowNumber, headerIndex, fileName, errors) => {
+      const coachName = requiredText(raw, headerIndex, 'Coach Name', rowNumber, fileName, errors);
+      const coachSfId = requiredText(raw, headerIndex, 'Coach SF ID', rowNumber, fileName, errors);
+      const coachEmail = requiredEmail(raw, headerIndex, 'Coach Email', rowNumber, fileName, errors);
+      const timing = parseDayAndTimeFields(raw, rowNumber, headerIndex, fileName, errors);
+      if (coachName === null || coachSfId === null || coachEmail === null || !timing) return null;
+      return {
+        coachName,
+        coachSfId,
+        coachEmail,
+        day: timing.day,
+        start: timing.start,
+        end: timing.end,
+        _row: rowNumber,
+      };
+    }
+  );
+
+  checkCoachConsistency(file.name, result.rows, result.errors);
+  result.rows = result.rows.map(({ _row, ...row }) => row);
+  return result;
+}
+
 export async function parseStudentList(file) {
-  const result = await parseSheet(file, ['Contact SF ID', 'Student Name'], (raw, rowNumber, headerIndex, fileName, errors) => {
-    const idCol = headerIndex['contact sf id'];
-    const nameCol = headerIndex['student name'];
-    const idRaw = raw[idCol];
-    const nameRaw = raw[nameCol];
-    let ok = true;
-    if (isBlank(idRaw)) {
-      addIssue(errors, fileName, rowNumber, 'Missing Contact SF ID value.');
-      ok = false;
+  const result = await parseSheet(
+    file,
+    ['Contact SF ID', 'Student Name', 'Student Email'],
+    (raw, rowNumber, headerIndex, fileName, errors) => {
+      const contactSfId = requiredText(raw, headerIndex, 'Contact SF ID', rowNumber, fileName, errors);
+      const studentName = requiredText(raw, headerIndex, 'Student Name', rowNumber, fileName, errors);
+      const studentEmail = requiredEmail(raw, headerIndex, 'Student Email', rowNumber, fileName, errors);
+      if (contactSfId === null || studentName === null || studentEmail === null) return null;
+      return { contactSfId, studentName, studentEmail, _row: rowNumber };
     }
-    if (isBlank(nameRaw)) {
-      addIssue(errors, fileName, rowNumber, 'Missing Student Name value.');
-      ok = false;
-    }
-    if (!ok) return null;
-    return { contactSfId: String(idRaw).trim(), studentName: String(nameRaw).trim(), _row: rowNumber };
-  });
+  );
 
   if (result.rows.length === 0) return result;
 
@@ -256,7 +320,7 @@ export async function parseStudentList(file) {
 
   result.rows = result.rows
     .filter((row) => !duplicateIds.has(row.contactSfId))
-    .map(({ contactSfId, studentName }) => ({ contactSfId, studentName }));
+    .map(({ contactSfId, studentName, studentEmail }) => ({ contactSfId, studentName, studentEmail }));
 
   return result;
 }

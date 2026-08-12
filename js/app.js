@@ -8,6 +8,8 @@ import {
   setStartDate,
   getMode,
   setMode,
+  getCampus,
+  setCampus,
   getFteMap,
   setFte,
   getExportMapping,
@@ -25,6 +27,7 @@ import {
 } from './errors.js';
 import { isXLSXAvailable, XLSX_MISSING_MESSAGE } from './xlsx-loader.js';
 import { renderTermRibbon } from './ribbon.js';
+import { CAMPUSES, DEFAULT_CAMPUS_ID, campusOrDefault } from './timezone.js';
 import {
   parseClassSchedule,
   parseCoachAvailability,
@@ -74,11 +77,15 @@ const UPLOAD_LABELS = {
 };
 
 const storedMode = getMode();
+const storedCampus = getCampus();
 
 const state = {
   stepIndex: 0,
   startDate: getStartDate() || null, // ISO yyyy-mm-dd, Monday-normalised
   mode: storedMode === 'pre-allocated' ? 'pre-allocated' : 'auto',
+  // One campus per run (SPEC.md §6.1): its timezone is what turns naive slot
+  // times into the offset-bearing instants the export requires.
+  campusId: campusOrDefault(storedCampus).id,
   uploads: { classSchedule: null, coachAvailability: null, studentList: null, pairings: null },
   exportMapping: sanitiseMapping(getExportMapping()) || getDefaultMapping(),
 };
@@ -92,6 +99,8 @@ function mustFind(id) {
 
 const startDateInput = mustFind('start-date-input');
 const dateNotice = mustFind('date-notice');
+const campusSelect = mustFind('campus-select');
+const campusNotice = mustFind('campus-notice');
 const modeAutoInput = mustFind('mode-auto');
 const modePreAllocatedInput = mustFind('mode-pre-allocated');
 const pairingsUploadCard = mustFind('pairings-upload-card');
@@ -159,6 +168,22 @@ function handleStartDateChange() {
     dateNotice.hidden = true;
   }
 
+  refreshComputedSteps();
+}
+
+/**
+ * Describes the campus in the terms the export uses, so the offset is
+ * visible before anyone opens the file.
+ */
+function renderCampusNotice() {
+  const campus = campusOrDefault(state.campusId);
+  campusNotice.textContent = `Meeting times will be exported in ${campus.label} local time (${campus.timeZone}, ${campus.example}).`;
+}
+
+function handleCampusChange(campusId) {
+  state.campusId = campusOrDefault(campusId).id;
+  setCampus(state.campusId);
+  renderCampusNotice();
   refreshComputedSteps();
 }
 
@@ -525,7 +550,9 @@ function computeEngineState() {
     ({ assignments, unassigned } = schedule(studentRows, slots, 'auto', quotas));
   }
 
-  const appointments = state.startDate ? expandToAppointments(assignments, state.startDate) : [];
+  const appointments = state.startDate
+    ? expandToAppointments(assignments, state.startDate, campusOrDefault(state.campusId).timeZone)
+    : [];
 
   const scheduledByCoach = {};
   coaches.forEach((c) => {
@@ -1104,7 +1131,10 @@ function startOver(alsoClearSettings) {
     clearSettings();
     state.startDate = null;
     state.mode = 'auto';
+    state.campusId = DEFAULT_CAMPUS_ID;
     state.exportMapping = getDefaultMapping();
+    campusSelect.value = DEFAULT_CAMPUS_ID;
+    renderCampusNotice();
     startDateInput.value = '';
     dateNotice.hidden = true;
     modeAutoInput.checked = true;
@@ -1167,7 +1197,17 @@ function init() {
   }
   pairingsUploadCard.hidden = state.mode !== 'pre-allocated';
 
+  campusSelect.innerHTML = CAMPUSES.map(
+    (campus) => `<option value="${campus.id}">${escapeHtml(campus.label)}</option>`
+  ).join('');
+  campusSelect.value = state.campusId;
+  renderCampusNotice();
+
   startDateInput.addEventListener('change', guarded('reading the start date', handleStartDateChange));
+  campusSelect.addEventListener(
+    'change',
+    guarded('changing the campus', () => handleCampusChange(campusSelect.value))
+  );
   modeAutoInput.addEventListener('change', guarded('switching to auto-assign mode', () => handleModeChange('auto')));
   modePreAllocatedInput.addEventListener(
     'change',

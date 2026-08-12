@@ -134,6 +134,16 @@ Run only after Sessions 1–6 are complete and verified. Replace `SPEC.md` in th
 
 **Verify:** block a week for a coach with scheduled students — their meetings for that block move within the block and the export shows "Rescheduled From Week"; block all three weeks of a block for a coach and confirm one exception per affected student; unblock and confirm the schedule returns to its original state; tests.html all green.
 
+### Session 8 — Export columns and campus time zones (v1.2)
+
+Run after Session 6. Replace `SPEC.md` with the v1.2 version before starting.
+
+**Prompt:**
+
+> Read SPEC.md §3, §6.1, §7 and §9. Replace the §7.1 default export columns with the ten-column set (Student Name, Contact SF ID (Student), Student Email, Service Name, Coach Name, Coach SF ID, Coach Email, Meeting Start Date & Time, Meeting End Date & Time, Meeting Status), keeping the old fields selectable but excluded in the mapping editor. Add js/timezone.js: the three campuses mapped to IANA zones, offsets read from Intl per instant (never hard-coded), and ISO 8601 `YYYY-MM-DDTHH:MM:SS±HH:MM` formatting. Add the Setup-step campus selector per §6.1 and persist it. Extend the student list and coach availability parsers and templates with the new required columns, rejecting blanks, malformed emails, and a coach whose rows disagree on SF ID or email. Write the two datetime columns as text cells, not Excel dates. Version the export-mapping localStorage key so stale mappings are discarded. Extend tests.html with the DST-crossing assertions in §7.1. Commit and push.
+
+**Verify:** export a term starting in September and confirm meetings before the October/November clock changes carry `+01:00` (London) or `-04:00` (Boston) and later ones carry `+00:00` / `-05:00`, while Dubai stays `+04:00` throughout; upload a coach file with two different emails for one coach and confirm the error names both rows; tests.html all green.
+
 ---
 
 ## Part D — Ongoing use and future changes
