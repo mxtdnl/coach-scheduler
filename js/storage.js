@@ -5,6 +5,7 @@
 const KEYS = {
   START_DATE: 'coachScheduler.startDate',
   MODE: 'coachScheduler.mode',
+  FTE: 'coachScheduler.fte',
 };
 
 export function getStartDate() {
@@ -21,4 +22,20 @@ export function getMode() {
 
 export function setMode(mode) {
   localStorage.setItem(KEYS.MODE, mode);
+}
+
+/** coach name → FTE (SPEC.md §5.1: persisted to localStorage keyed by coach name). */
+export function getFteMap() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(KEYS.FTE));
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export function setFte(coachName, value) {
+  const map = getFteMap();
+  map[coachName] = value;
+  localStorage.setItem(KEYS.FTE, JSON.stringify(map));
 }

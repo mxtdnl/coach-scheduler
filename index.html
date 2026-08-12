@@ -4,6 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Coaching Meeting Scheduler</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;700&family=Spline+Sans+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="styles.css" />
   <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
 </head>
@@ -145,17 +148,13 @@
     <!-- Step 3: Review -->
     <section class="step-panel" data-step="review" hidden>
       <h2>Review</h2>
-      <div class="card">
-        <p class="help-text">The FTE editor and capacity summary will appear here once uploads are parsed and the scheduling engine is wired up (later sessions).</p>
-      </div>
+      <div id="review-content"></div>
     </section>
 
     <!-- Step 4: Results -->
     <section class="step-panel" data-step="results" hidden>
       <h2>Results</h2>
-      <div class="card">
-        <p class="help-text">The schedule summary, unassigned-students table, appointment preview, and export button will appear here once the scheduling engine and exporter are implemented (later sessions).</p>
-      </div>
+      <div id="results-content"></div>
     </section>
 
   </main>
