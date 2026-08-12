@@ -211,14 +211,78 @@ h1, h2, h3 {
   text-decoration: underline;
 }
 
-/* Upload placeholders */
+/* Uploads */
 
-input[type="file"] {
+.upload-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
+
+.dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 24px 16px;
+  border: 2px dashed var(--color-border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  text-align: center;
+  color: var(--color-text-muted);
   font-size: 0.9rem;
 }
 
-input[type="file"]:disabled {
-  opacity: 0.6;
+.dropzone:hover,
+.dropzone.dropzone-active {
+  border-color: var(--color-primary);
+  background: #eef2fc;
+}
+
+.dropzone-filename {
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.upload-result {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  font-size: 0.9rem;
+}
+
+.upload-result-success {
+  background: #e9f7ee;
+  border: 1px solid #a8dbb8;
+  color: #1e6b38;
+}
+
+.upload-result-error {
+  background: #fdecec;
+  border: 1px solid #f0b4b4;
+  color: #8a2222;
+}
+
+.upload-result-summary {
+  margin: 0 0 8px;
+  font-weight: 600;
+}
+
+.issue-group {
+  margin-top: 8px;
+}
+
+.issue-group:first-child {
+  margin-top: 0;
+}
+
+.issue-group ul {
+  margin: 4px 0 0;
+  padding-left: 20px;
+}
+
+.issue-group li {
+  margin-bottom: 4px;
 }
 
 /* Footer nav */

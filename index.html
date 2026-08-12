@@ -94,27 +94,51 @@
     <!-- Step 2: Upload -->
     <section class="step-panel" data-step="upload" hidden>
       <h2>Upload</h2>
-      <p class="help-text">File parsing and validation are implemented in a later step. These controls are placeholders for now.</p>
+      <p class="help-text">Drag and drop each file, or click to choose one. Results appear below each file as soon as it's read. Nothing is saved outside this browser tab.</p>
 
-      <div class="card">
+      <div class="upload-toolbar">
+        <button type="button" id="clear-uploads-btn" class="btn btn-secondary">Clear all uploads</button>
+      </div>
+
+      <div class="card upload-card">
         <h3>Class schedule</h3>
-        <input type="file" accept=".xlsx" disabled />
+        <label class="dropzone" data-upload="classSchedule">
+          <input type="file" accept=".xlsx" class="file-input" hidden />
+          <span class="dropzone-text">Drag and drop the file here, or click to choose</span>
+          <span class="dropzone-filename" hidden></span>
+        </label>
+        <div class="upload-result" hidden></div>
       </div>
 
-      <div class="card">
+      <div class="card upload-card">
         <h3>Coach availability</h3>
-        <input type="file" accept=".xlsx" disabled />
+        <label class="dropzone" data-upload="coachAvailability">
+          <input type="file" accept=".xlsx" class="file-input" hidden />
+          <span class="dropzone-text">Drag and drop the file here, or click to choose</span>
+          <span class="dropzone-filename" hidden></span>
+        </label>
+        <div class="upload-result" hidden></div>
       </div>
 
-      <div class="card">
+      <div class="card upload-card">
         <h3>Student list</h3>
-        <input type="file" accept=".xlsx" disabled />
+        <label class="dropzone" data-upload="studentList">
+          <input type="file" accept=".xlsx" class="file-input" hidden />
+          <span class="dropzone-text">Drag and drop the file here, or click to choose</span>
+          <span class="dropzone-filename" hidden></span>
+        </label>
+        <div class="upload-result" hidden></div>
       </div>
 
-      <div class="card" id="pairings-upload-card" hidden>
+      <div class="card upload-card" id="pairings-upload-card" hidden>
         <h3>Pairings</h3>
         <p class="help-text">Required in pre-allocated mode.</p>
-        <input type="file" accept=".xlsx" disabled />
+        <label class="dropzone" data-upload="pairings">
+          <input type="file" accept=".xlsx" class="file-input" hidden />
+          <span class="dropzone-text">Drag and drop the file here, or click to choose</span>
+          <span class="dropzone-filename" hidden></span>
+        </label>
+        <div class="upload-result" hidden></div>
       </div>
     </section>
 
