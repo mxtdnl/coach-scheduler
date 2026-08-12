@@ -770,13 +770,85 @@ input:focus {
 
 /* ---------- §3.6 Blocking panel ---------- */
 
+/* A sheet, not a modal (§3.6): it pins to the right edge and scrolls on its
+   own, so the tables behind it stay visible and usable. */
 .sheet {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 64px; /* clears the fixed app footer */
+  z-index: 19; /* under the footer, over the sticky table headers */
   width: 420px;
+  max-width: calc(100vw - 32px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
   background: var(--surface);
   border: 1px solid var(--line);
   border-left: 2px solid var(--line);
   border-radius: var(--radius-card) 0 0 var(--radius-card);
   padding: 24px;
+  box-shadow: var(--shadow-card);
+}
+
+.sheet[hidden] {
+  display: none;
+}
+
+.sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sheet-heading {
+  font: 700 13px/18px var(--ui);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+}
+
+.sheet-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.sheet-row .field {
+  max-width: 180px;
+}
+
+.sheet-actions {
+  margin-top: auto;
+  padding-top: 8px;
+}
+
+/* The full 15-week ribbon is wider than the sheet, so its blocks wrap onto
+   further rows rather than scrolling out of sight. */
+.sheet .ribbon {
+  flex-wrap: wrap;
+  gap: 12px 8px;
+}
+
+/* While the sheet is open the main column gives way rather than sitting
+   underneath it (§3.6: the sheet never covers the tables entirely). */
+.app-sheet-open .app-main {
+  padding-right: 452px;
+}
+
+@media (max-width: 1360px) {
+  .app-sheet-open .app-main {
+    padding-right: 32px;
+  }
+}
+
+.review-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
 }
 
 .block-list {
@@ -791,6 +863,26 @@ input:focus {
   gap: 12px;
   padding: 8px 0;
   border-bottom: 1px solid var(--line-50);
+}
+
+.block-list .block-empty {
+  border-bottom: 0;
+  color: var(--ink-2);
+}
+
+.block-list .block-stale {
+  color: var(--warn);
+}
+
+input[type="number"] {
+  height: 36px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  color: var(--ink);
+  font: 400 13px/18px var(--mono);
+  width: 84px;
 }
 
 /* ---------- Alerts (SPEC.md §6: nothing fails silently) ---------- */

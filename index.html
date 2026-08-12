@@ -192,6 +192,13 @@
 
         <div class="ribbon-mount" data-ribbon="review"></div>
 
+        <div class="review-toolbar">
+          <button type="button" id="blocking-toggle" class="btn btn-secondary" aria-expanded="false" aria-controls="blocking-sheet">
+            Blocked weeks/dates
+          </button>
+          <span class="help-text" id="blocking-summary"></span>
+        </div>
+
         <div id="review-content"></div>
       </section>
 
@@ -230,6 +237,52 @@
       </section>
 
     </main>
+
+    <!-- SPEC.md §11.2 / DESIGN.md §3.6: a right-side sheet, not a modal, so
+         the tables behind it stay readable while blocks are edited. -->
+    <aside class="sheet" id="blocking-sheet" aria-labelledby="blocking-sheet-title" hidden>
+      <div class="sheet-head">
+        <h2 id="blocking-sheet-title">Blocked weeks and dates</h2>
+        <button type="button" class="icon-btn" id="blocking-close" aria-label="Close blocked weeks and dates">&#10005;</button>
+      </div>
+      <p class="help-text">
+        Mark the weeks or dates a coach is away. Their meetings move to another week in the same block, keeping the same
+        coach.
+      </p>
+
+      <label class="field">
+        <span>Coach</span>
+        <select id="blocking-coach"></select>
+      </label>
+
+      <div class="ribbon-mount" id="blocking-ribbon"></div>
+      <p class="help-text">Click a week to block or unblock it for this coach.</p>
+
+      <div class="sheet-row">
+        <label class="field">
+          <span>Week number</span>
+          <input type="number" id="blocking-week-input" min="1" max="15" step="1" />
+        </label>
+        <button type="button" id="blocking-add-week" class="btn btn-secondary">Add week</button>
+      </div>
+
+      <div class="sheet-row">
+        <label class="field">
+          <span>Date</span>
+          <input type="date" id="blocking-date-input" />
+        </label>
+        <button type="button" id="blocking-add-date" class="btn btn-secondary">Add date</button>
+      </div>
+
+      <p id="blocking-notice" class="banner banner-inline" hidden></p>
+
+      <h3 class="sheet-heading">Current blocks</h3>
+      <ul class="block-list" id="blocking-list"></ul>
+
+      <div class="sheet-actions">
+        <button type="button" id="blocking-clear" class="btn btn-destructive">Clear all blocks</button>
+      </div>
+    </aside>
   </div>
 
   <footer class="app-footer">
@@ -250,7 +303,7 @@
         <input type="checkbox" id="start-over-clear-settings" />
         <span>
           Also clear saved settings
-          <small>Term start date, assignment mode, FTE values, and your export column layout.</small>
+          <small>Term start date, assignment mode, FTE values, blocked weeks and dates, and your export column layout.</small>
         </span>
       </label>
       <div class="dialog-actions">

@@ -21,8 +21,9 @@ own computer and are never sent anywhere. Closing the tab throws the data away.
 5. [The two modes](#5-the-two-modes)
 6. [FTE: sharing students between coaches](#6-fte-sharing-students-between-coaches)
 7. [Changing the export columns](#7-changing-the-export-columns)
-8. [Starting over](#8-starting-over)
-9. [Troubleshooting: every message the tool can show](#9-troubleshooting-every-message-the-tool-can-show)
+8. [Blocked weeks and dates](#8-blocked-weeks-and-dates)
+9. [Starting over](#9-starting-over)
+10. [Troubleshooting: every message the tool can show](#10-troubleshooting-every-message-the-tool-can-show)
 
 ---
 
@@ -207,8 +208,10 @@ by how much, before you get as far as the results.
 - A one-line summary: how many students were scheduled, how many appointments
   that makes, and how many students could not be placed.
 - **Coach utilisation** — how full each coach's diary ended up.
-- **Unassigned students** — anybody who could not be scheduled, with the
-  reason. If everyone fits, it says so.
+- **Unassigned students and exceptions** — anybody who could not be scheduled,
+  with the reason, plus any single meeting that could not be moved around a
+  blocked week or date (see [section 8](#8-blocked-weeks-and-dates)). If
+  everyone fits, it says so.
 - **Appointments** — a preview of the first 50 rows, in exactly the columns
   your export will have.
 - **Export appointments** — downloads the spreadsheet, named
@@ -229,6 +232,11 @@ coach:
 | Meeting Start Date & Time | 2026-09-16T12:00:00+01:00 |
 | Meeting End Date & Time | 2026-09-16T13:00:00+01:00 |
 | Meeting Status | Scheduled |
+| Rescheduled From Week | 5 |
+
+**Rescheduled From Week** is blank unless the meeting was moved out of a
+blocked week or date ([section 8](#8-blocked-weeks-and-dates)), in which case
+it holds the week it moved from.
 
 **Service Name** counts the meeting: a student's four appointments are
 `Coaching 1 - Meeting 1` through `Coaching 1 - Meeting 4`. **Meeting Status**
@@ -331,22 +339,65 @@ layout is remembered for next time.
 
 ---
 
-## 8. Starting over
+## 8. Blocked weeks and dates
+
+When a coach is away — annual leave, a conference, a single day off — mark it
+and the tool moves their meetings for you.
+
+On the **Review** step, press **Blocked weeks/dates**. A panel opens on the
+right:
+
+- Choose the **coach**.
+- Click a week in the ribbon to block or unblock it, or type a **week number**
+  (1–15) and press *Add week*.
+- Or pick a **date** and press *Add date*. The date must fall inside the term;
+  it is stored as that coach's weekday in that week, so only meetings on that
+  day move.
+- **Current blocks** lists everything blocked, for every coach, each with a
+  *Remove* button. **Clear all blocks** empties the list.
+
+Weeks 4, 8 and 12 never hold meetings, so blocking one does nothing — the panel
+says so and does not add it.
+
+### What happens to a blocked meeting
+
+Only the meetings in the blocked week or on the blocked date move, and they
+always stay with the same coach and inside the same block of the term (weeks
+1–3, 5–7, 9–11, or 13–15). The tool tries, in order:
+
+1. **The same day and time in another week of that block**, earliest week
+   first — the smallest possible change for the student.
+2. **Any other free hour of that coach in that block**, taking the earliest
+   week first, then the coach's hours in their usual order.
+3. If the block is genuinely full, that one meeting becomes an **exception**.
+   The student's other three meetings are untouched.
+
+Moved meetings show the week they came from in the **Rescheduled From Week**
+export column, which is blank for every meeting that stayed put. Exceptions are
+listed on the Results step, one row per meeting, with the reason
+*no free slot in block N — coach blocked*.
+
+Blocks are saved in your browser with the other settings, and the schedule is
+rebuilt the moment you add or remove one.
+
+---
+
+## 9. Starting over
 
 **Start over**, at the bottom left of every step, clears the files you have
 uploaded and the schedule built from them. Your spreadsheets on disk are never
 touched.
 
 It asks first. In that dialog you can also tick **Also clear saved settings**,
-which additionally forgets your term start date, mode, FTE values and export
-column layout — a completely clean slate.
+which additionally forgets your term start date, mode, FTE values, blocked
+weeks and dates, and export column layout — a completely clean slate.
 
-The only things kept between visits are those four settings. Student, coach and
+Those settings are the only things kept between visits. Student, coach and
 class data is never saved anywhere.
 
 ---
 
-## 9. Troubleshooting: every message the tool can show
+## 10. Troubleshooting: every message the tool can show
 
 ### Messages about a file you uploaded
 
@@ -385,7 +436,7 @@ student will go unscheduled, so they are worth reading.
 
 ### Reasons a student was not scheduled
 
-These show in the Unassigned students table on the Results step.
+These show in the Unassigned students and exceptions table on the Results step.
 
 | Reason | What it means | What to do |
 |---|---|---|
@@ -393,6 +444,7 @@ These show in the Unassigned students table on the Results step.
 | **No pairing** | Pre-allocated mode: this student is in the student list but not in the pairings file. | Add a row for them in the pairings file. |
 | **Coach not found** | Their pairing names a coach with no availability. | Fix the spelling of the coach's name, or add their availability. |
 | **Coach over capacity** | More students are paired to that coach than their free hours can hold (hours × 3). | Give the coach more availability, or move some students to another coach. |
+| **No free slot in block N — coach blocked** | One meeting, not a whole student: the coach is blocked that week or date and every other hour of theirs in that block of the term is already taken. | Unblock a week, or give the coach another free hour inside weeks 1–3, 5–7, 9–11 or 13–15 as appropriate. The student's other three meetings are unaffected. |
 
 ### Messages about the tool itself
 
@@ -413,11 +465,7 @@ These appear as a banner at the top of the page and can be dismissed.
 
 ## Not included yet
 
-Blocked weeks and dates — marking a coach as away for a week or a specific day
-and having their meetings automatically moved elsewhere in the same block — is
-specified but not built yet.
-
-Also out of scope: more than one class timetable per run, per-student
+Out of scope: more than one class timetable per run, per-student
 availability, more than one campus per run, public holidays, and editing
 individual appointments after they are generated.
 

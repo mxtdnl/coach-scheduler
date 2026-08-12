@@ -14,6 +14,8 @@ import {
   setFte,
   getExportMapping,
   setExportMapping,
+  getBlocks,
+  setBlocks,
   clearSettings,
 } from './storage.js';
 import {
@@ -40,6 +42,10 @@ import {
   computeQuotas,
   schedule,
   expandToAppointments,
+  applyBlocks,
+  weekAndDayForDate,
+  EXCLUDED_WEEKS,
+  TERM_WEEKS,
   MAX_STUDENTS_PER_SLOT,
   REASONS,
 } from './scheduler.js';
@@ -88,6 +94,10 @@ const state = {
   campusId: campusOrDefault(storedCampus).id,
   uploads: { classSchedule: null, coachAvailability: null, studentList: null, pairings: null },
   exportMapping: sanitiseMapping(getExportMapping()) || getDefaultMapping(),
+  // Blocked coach weeks/dates (SPEC.md §11.2) and the coach the panel is
+  // currently editing.
+  blocks: [],
+  blockingCoach: null,
 };
 
 /** Looks up a required element, failing with a message that names it. */
@@ -110,6 +120,19 @@ const startOverBtn = mustFind('start-over-btn');
 const startOverDialog = mustFind('start-over-dialog');
 const startOverForm = mustFind('start-over-form');
 const startOverClearSettings = mustFind('start-over-clear-settings');
+const blockingToggle = mustFind('blocking-toggle');
+const blockingSheet = mustFind('blocking-sheet');
+const blockingClose = mustFind('blocking-close');
+const blockingCoachSelect = mustFind('blocking-coach');
+const blockingRibbon = mustFind('blocking-ribbon');
+const blockingWeekInput = mustFind('blocking-week-input');
+const blockingAddWeek = mustFind('blocking-add-week');
+const blockingDateInput = mustFind('blocking-date-input');
+const blockingAddDate = mustFind('blocking-add-date');
+const blockingNotice = mustFind('blocking-notice');
+const blockingList = mustFind('blocking-list');
+const blockingClear = mustFind('blocking-clear');
+const blockingSummary = mustFind('blocking-summary');
 const stepperItems = document.querySelectorAll('.stepper-item');
 const stepPanels = document.querySelectorAll('.step-panel');
 
@@ -417,6 +440,350 @@ function setupUpload(key) {
   );
 }
 
+// ---- Blocked weeks/dates (SPEC.md §11.2) ----
+//
+// Stored in the form the panel edits — { coach, kind: 'week', week } or
+// { coach, kind: 'date', date } — rather than pre-resolved, so a date block
+// still points at the right week if the term start date changes later.
+
+function sanitiseBlocks(list) {
+  const seen = new Set();
+  return (Array.isArray(list) ? list : [])
+    .map((entry) => {
+      if (!entry || typeof entry !== 'object') return null;
+      const coach = typeof entry.coach === 'string' && entry.coach ? entry.coach : null;
+      if (!coach) return null;
+      if (entry.kind === 'date') {
+        return /^\d{4}-\d{2}-\d{2}$/.test(String(entry.date)) ? { coach, kind: 'date', date: entry.date } : null;
+      }
+      const week = Number(entry.week);
+      if (!Number.isInteger(week) || week < 1 || week > TERM_WEEKS) return null;
+      return { coach, kind: 'week', week };
+    })
+    .filter((block) => {
+      if (!block) return false;
+      const key = blockKey(block);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function blockKey(block) {
+  return block.kind === 'date' ? `${block.coach}|date|${block.date}` : `${block.coach}|week|${block.week}`;
+}
+
+/**
+ * A stored block in the engine's `{coach, week, day}` form (SPEC.md §11.2:
+ * a date is "internally resolved to coach + week + weekday"). Returns null
+ * for a date that cannot be placed in the term yet — no start date chosen, or
+ * a date outside the 15 weeks.
+ */
+function resolveBlock(block) {
+  if (block.kind === 'week') return { coach: block.coach, week: block.week, day: null };
+  if (!state.startDate) return null;
+  const at = weekAndDayForDate(block.date, state.startDate);
+  return at ? { coach: block.coach, week: at.week, day: at.day } : null;
+}
+
+function resolvedBlocks() {
+  return state.blocks.map(resolveBlock).filter(Boolean);
+}
+
+/** The line shown for a block in the panel's list, with any no-op caveat. */
+function describeBlock(block) {
+  if (block.kind === 'week') {
+    return {
+      text: `Week ${block.week}`,
+      note: EXCLUDED_WEEKS.includes(block.week) ? 'No meetings in this week, so this has no effect.' : '',
+    };
+  }
+  const resolved = resolveBlock(block);
+  if (!resolved) {
+    return {
+      text: state.startDate ? formatReadable(block.date) : block.date,
+      note: state.startDate
+        ? 'Outside the term, so this has no effect.'
+        : 'Choose a term start date to place this date in a week.',
+    };
+  }
+  return {
+    text: `${formatReadable(block.date)} (week ${resolved.week})`,
+    note: EXCLUDED_WEEKS.includes(resolved.week) ? 'No meetings in this week, so this has no effect.' : '',
+  };
+}
+
+function persistBlocks() {
+  setBlocks(state.blocks);
+}
+
+/** Adds a block unless it is already there; returns whether it was added. */
+function addBlock(block) {
+  const key = blockKey(block);
+  if (state.blocks.some((existing) => blockKey(existing) === key)) return false;
+  state.blocks.push(block);
+  persistBlocks();
+  refreshComputedSteps();
+  return true;
+}
+
+function removeBlockByKey(key) {
+  state.blocks = state.blocks.filter((block) => blockKey(block) !== key);
+  persistBlocks();
+  refreshComputedSteps();
+}
+
+function clearAllBlocks() {
+  state.blocks = [];
+  persistBlocks();
+  refreshComputedSteps();
+}
+
+function showBlockingNotice(message) {
+  blockingNotice.textContent = message;
+  blockingNotice.hidden = !message;
+}
+
+/** Coaches offered in the panel: those with availability, plus any a stored block still names. */
+function blockingCoaches() {
+  const names = [];
+  rowsFor('coachAvailability').forEach((row) => {
+    if (!names.includes(row.coachName)) names.push(row.coachName);
+  });
+  state.blocks.forEach((block) => {
+    if (!names.includes(block.coach)) names.push(block.coach);
+  });
+  return names;
+}
+
+function selectedBlockingCoach(coaches) {
+  if (state.blockingCoach && coaches.includes(state.blockingCoach)) return state.blockingCoach;
+  return coaches[0] || null;
+}
+
+/** Weeks the given coach is blocked in, as ribbon week states. */
+function weekStatesForCoach(coach, exceptionWeeks = new Set()) {
+  const states = {};
+  resolvedBlocks()
+    .filter((block) => block.coach === coach)
+    .forEach((block) => {
+      states[block.week] = { ...(states[block.week] || {}), blocked: true };
+    });
+  exceptionWeeks.forEach((week) => {
+    states[week] = { ...(states[week] || {}), exceptions: true };
+  });
+  return states;
+}
+
+/** Toggling a week cell blocks it, or clears whatever already blocks it. */
+function toggleWeekForCoach(coach, week) {
+  const existing = state.blocks.filter((block) => {
+    const resolved = resolveBlock(block);
+    return resolved && resolved.coach === coach && resolved.week === week;
+  });
+  if (existing.length > 0) {
+    const keys = new Set(existing.map(blockKey));
+    state.blocks = state.blocks.filter((block) => !keys.has(blockKey(block)));
+    persistBlocks();
+    showBlockingNotice('');
+    refreshComputedSteps();
+    return;
+  }
+  showBlockingNotice('');
+  addBlock({ coach, kind: 'week', week });
+}
+
+function termDateRange() {
+  if (!state.startDate) return null;
+  const [year, month, day] = state.startDate.split('-').map(Number);
+  const first = new Date(year, month - 1, day);
+  const last = new Date(first);
+  last.setDate(last.getDate() + TERM_WEEKS * 7 - 1);
+  return { first: toISODate(first), last: toISODate(last) };
+}
+
+function renderBlockingPanel(exceptionWeeksByCoach = new Map()) {
+  const coaches = blockingCoaches();
+  const coach = selectedBlockingCoach(coaches);
+  state.blockingCoach = coach;
+
+  blockingCoachSelect.innerHTML = coaches.length
+    ? coaches.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('')
+    : '<option value="">No coaches yet</option>';
+  blockingCoachSelect.disabled = coaches.length === 0;
+  if (coach) blockingCoachSelect.value = coach;
+
+  const canEdit = Boolean(coach);
+  blockingAddWeek.disabled = !canEdit;
+  blockingAddDate.disabled = !canEdit;
+  blockingWeekInput.disabled = !canEdit;
+  blockingDateInput.disabled = !canEdit || !state.startDate;
+
+  const range = termDateRange();
+  if (range) {
+    blockingDateInput.min = range.first;
+    blockingDateInput.max = range.last;
+  } else {
+    blockingDateInput.removeAttribute('min');
+    blockingDateInput.removeAttribute('max');
+  }
+
+  renderTermRibbon(blockingRibbon, {
+    label: coach ? `Blocked weeks for ${coach}` : 'Term weeks',
+    interactive: canEdit,
+    weekStates: weekStatesForCoach(coach, exceptionWeeksByCoach.get(coach) || new Set()),
+    onToggleWeek: (week) => guard('blocking or unblocking a week', () => toggleWeekForCoach(coach, week)),
+  });
+
+  blockingList.replaceChildren();
+  if (state.blocks.length === 0) {
+    const empty = document.createElement('li');
+    empty.className = 'block-empty';
+    empty.textContent = 'No weeks or dates are blocked.';
+    blockingList.appendChild(empty);
+  } else {
+    // Grouped by coach, each coach's blocks in the order they were added.
+    const byCoach = new Map();
+    state.blocks.forEach((block) => {
+      if (!byCoach.has(block.coach)) byCoach.set(block.coach, []);
+      byCoach.get(block.coach).push(block);
+    });
+    byCoach.forEach((blocks, name) => {
+      blocks.forEach((block) => {
+        const { text, note } = describeBlock(block);
+        const item = document.createElement('li');
+        const label = document.createElement('span');
+        label.innerHTML = `${escapeHtml(name)} — <span class="mono">${escapeHtml(text)}</span>${
+          note ? `<br /><span class="block-stale">${escapeHtml(note)}</span>` : ''
+        }`;
+        const remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'btn btn-destructive btn-small';
+        remove.textContent = 'Remove';
+        remove.setAttribute('aria-label', `Remove the block on ${name}, ${text}`);
+        remove.addEventListener(
+          'click',
+          guarded('removing a block', () => removeBlockByKey(blockKey(block)))
+        );
+        item.append(label, remove);
+        blockingList.appendChild(item);
+      });
+    });
+  }
+
+  blockingClear.disabled = state.blocks.length === 0;
+
+  const coachCount = new Set(state.blocks.map((block) => block.coach)).size;
+  blockingSummary.textContent =
+    state.blocks.length === 0
+      ? 'No weeks or dates are blocked.'
+      : `${state.blocks.length} block${state.blocks.length === 1 ? '' : 's'} across ${coachCount} coach${
+          coachCount === 1 ? '' : 'es'
+        }.`;
+}
+
+function setBlockingSheetOpen(open) {
+  blockingSheet.hidden = !open;
+  blockingToggle.setAttribute('aria-expanded', String(open));
+  document.querySelector('.app').classList.toggle('app-sheet-open', open);
+  if (open) blockingCoachSelect.focus();
+}
+
+function setupBlockingPanel() {
+  blockingToggle.addEventListener(
+    'click',
+    guarded('opening the blocked weeks and dates panel', () => {
+      setBlockingSheetOpen(blockingSheet.hidden);
+    })
+  );
+
+  blockingClose.addEventListener(
+    'click',
+    guarded('closing the blocked weeks and dates panel', () => {
+      setBlockingSheetOpen(false);
+      blockingToggle.focus();
+    })
+  );
+
+  blockingCoachSelect.addEventListener(
+    'change',
+    guarded('choosing a coach', () => {
+      state.blockingCoach = blockingCoachSelect.value || null;
+      showBlockingNotice('');
+      refreshComputedSteps();
+    })
+  );
+
+  blockingAddWeek.addEventListener(
+    'click',
+    guarded('blocking a week', () => {
+      const coach = state.blockingCoach;
+      if (!coach) {
+        showBlockingNotice('Upload the coach availability file to choose a coach.');
+        return;
+      }
+      const week = Number(blockingWeekInput.value);
+      if (!Number.isInteger(week) || week < 1 || week > TERM_WEEKS) {
+        showBlockingNotice(`Enter a week number between 1 and ${TERM_WEEKS}.`);
+        return;
+      }
+      // SPEC.md §11.2: weeks 4, 8 and 12 hold no meetings, so blocking one
+      // would change nothing — say so rather than storing a block that does
+      // nothing.
+      if (EXCLUDED_WEEKS.includes(week)) {
+        showBlockingNotice(`Week ${week} has no meetings, so blocking it changes nothing. It was not added.`);
+        return;
+      }
+      const added = addBlock({ coach, kind: 'week', week });
+      showBlockingNotice(added ? '' : `${coach} is already blocked for week ${week}.`);
+      if (added) blockingWeekInput.value = '';
+    })
+  );
+
+  blockingAddDate.addEventListener(
+    'click',
+    guarded('blocking a date', () => {
+      const coach = state.blockingCoach;
+      if (!coach) {
+        showBlockingNotice('Upload the coach availability file to choose a coach.');
+        return;
+      }
+      if (!state.startDate) {
+        showBlockingNotice('Choose a term start date on the Setup step before blocking a date.');
+        return;
+      }
+      const date = blockingDateInput.value;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        showBlockingNotice('Choose a date with the date picker, or type it as YYYY-MM-DD.');
+        return;
+      }
+      const at = weekAndDayForDate(date, state.startDate);
+      if (!at) {
+        const range = termDateRange();
+        showBlockingNotice(
+          `That date is outside the term. The term runs ${formatReadable(range.first)} to ${formatReadable(range.last)}.`
+        );
+        return;
+      }
+      if (EXCLUDED_WEEKS.includes(at.week)) {
+        showBlockingNotice(`That date falls in week ${at.week}, which has no meetings, so it was not added.`);
+        return;
+      }
+      const added = addBlock({ coach, kind: 'date', date });
+      showBlockingNotice(added ? '' : `${coach} is already blocked on ${formatReadable(date)}.`);
+      if (added) blockingDateInput.value = '';
+    })
+  );
+
+  blockingClear.addEventListener(
+    'click',
+    guarded('clearing every block', () => {
+      showBlockingNotice('');
+      clearAllBlocks();
+    })
+  );
+}
+
 // ---- Review & Results steps (SPEC.md §5, §6, §9) ----
 
 function capitalize(text) {
@@ -550,9 +917,18 @@ function computeEngineState() {
     ({ assignments, unassigned } = schedule(studentRows, slots, 'auto', quotas));
   }
 
-  const appointments = state.startDate
-    ? expandToAppointments(assignments, state.startDate, campusOrDefault(state.campusId).timeZone)
-    : [];
+  const timeZone = campusOrDefault(state.campusId).timeZone;
+  const expanded = state.startDate ? expandToAppointments(assignments, state.startDate, timeZone) : [];
+
+  // SPEC.md §11.3 — the blocking post-pass runs over the finished §4/§5
+  // schedule, so it re-runs automatically whenever a block changes.
+  const engineBlocks = resolvedBlocks();
+  const blocked = applyBlocks(expanded, engineBlocks, slots, {
+    timeZone,
+    startMonday: state.startDate || undefined,
+  });
+  const appointments = blocked.appointments;
+  const exceptions = blocked.exceptions;
 
   const scheduledByCoach = {};
   coaches.forEach((c) => {
@@ -576,6 +952,9 @@ function computeEngineState() {
     assignments,
     unassigned,
     appointments,
+    exceptions,
+    movedCount: blocked.movedCount,
+    engineBlocks,
     scheduledByCoach,
   };
 }
@@ -821,33 +1200,58 @@ function renderUtilisationTable(eng) {
     </div>`;
 }
 
-function renderUnassignedTable(eng) {
-  if (eng.unassigned.length === 0) {
+/**
+ * Unassigned students (SPEC.md §5) and the per-meeting exceptions the
+ * blocking post-pass could not rebook (§11.3(3), §11.4), in one table: both
+ * are "this did not get scheduled, and here is why".
+ */
+function renderExceptionsTable(eng) {
+  if (eng.unassigned.length === 0 && eng.exceptions.length === 0) {
     return `
     <div class="card">
-      <h2>Unassigned students</h2>
-      <div class="table-wrap"><p class="table-empty">All students were scheduled.</p></div>
+      <h2>Unassigned students and exceptions</h2>
+      <div class="table-wrap"><p class="table-empty">All students were scheduled, with no meetings displaced.</p></div>
     </div>`;
   }
 
-  const rows = eng.unassigned
-    .map(
-      ({ student, reason }) => `
+  const unassignedRows = eng.unassigned.map(
+    ({ student, reason }) => `
     <tr>
       <td>${escapeHtml(student.studentName)} <span class="mono">${escapeHtml(student.contactSfId)}</span></td>
+      <td>All 4 meetings</td>
       <td><span class="chip chip-exception">${escapeHtml(capitalize(reason))}</span></td>
     </tr>`
-    )
-    .join('');
+  );
+
+  const exceptionRows = eng.exceptions.map(
+    ({ student, coach, meetingNumber, week, reason }) => `
+    <tr>
+      <td>${escapeHtml(student.studentName)} <span class="mono">${escapeHtml(student.contactSfId)}</span></td>
+      <td>Meeting <span class="mono">${meetingNumber}</span> · week <span class="mono">${week}</span> · ${escapeHtml(coach)}</td>
+      <td><span class="chip chip-exception">${escapeHtml(capitalize(reason))}</span></td>
+    </tr>`
+  );
+
+  const summaryBits = [];
+  if (eng.unassigned.length > 0) {
+    summaryBits.push(
+      `${eng.unassigned.length} student${eng.unassigned.length === 1 ? '' : 's'} could not be scheduled`
+    );
+  }
+  if (eng.exceptions.length > 0) {
+    summaryBits.push(
+      `${eng.exceptions.length} meeting${eng.exceptions.length === 1 ? '' : 's'} could not be rebooked around a blocked week or date`
+    );
+  }
 
   return `
     <div class="card">
-      <h2>Unassigned students</h2>
-      <p class="help-text">${eng.unassigned.length} student${eng.unassigned.length === 1 ? '' : 's'} could not be scheduled.</p>
+      <h2>Unassigned students and exceptions</h2>
+      <p class="help-text">${summaryBits.join(' · ')}.</p>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Student</th><th>Reason</th></tr></thead>
-          <tbody>${rows}</tbody>
+          <thead><tr><th>Student</th><th>Meetings</th><th>Reason</th></tr></thead>
+          <tbody>${[...unassignedRows, ...exceptionRows].join('')}</tbody>
         </table>
       </div>
     </div>`;
@@ -943,10 +1347,16 @@ function renderResults() {
   const eng = computeEngineState();
   const scheduledCount = eng.assignments.length;
   const unassignedChip = eng.unassigned.length > 0 ? ` · <span class="chip chip-exception">${eng.unassigned.length} unassigned</span>` : '';
+  const exceptionChip =
+    eng.exceptions.length > 0 ? ` · <span class="chip chip-exception">${eng.exceptions.length} exception${eng.exceptions.length === 1 ? '' : 's'}</span>` : '';
+  const movedNote =
+    eng.movedCount > 0
+      ? ` · <span class="mono-500">${eng.movedCount}</span> meeting${eng.movedCount === 1 ? '' : 's'} moved around blocked weeks`
+      : '';
 
-  sub.innerHTML = `<span class="mono-500">${scheduledCount}</span> of <span class="mono-500">${eng.studentCount}</span> students scheduled · <span class="mono-500">${eng.appointments.length}</span> appointments${unassignedChip}`;
+  sub.innerHTML = `<span class="mono-500">${scheduledCount}</span> of <span class="mono-500">${eng.studentCount}</span> students scheduled · <span class="mono-500">${eng.appointments.length}</span> appointments${movedNote}${unassignedChip}${exceptionChip}`;
 
-  const parts = [renderUtilisationTable(eng), renderUnassignedTable(eng), renderAppointmentsPreview(eng)];
+  const parts = [renderUtilisationTable(eng), renderExceptionsTable(eng), renderAppointmentsPreview(eng)];
 
   container.innerHTML = parts.join('');
   attachExportButtonHandler();
@@ -960,6 +1370,35 @@ function renderResults() {
 function refreshComputedSteps() {
   guard('working out coach capacity', renderReview);
   guard('building the schedule', renderResults);
+  guard('updating the blocked weeks and dates panel', renderBlockingContext);
+}
+
+/**
+ * Keeps the blocking panel and the display-only ribbons in step with the
+ * current schedule. The panel's ribbon is the coach view (DESIGN.md §3.1), so
+ * it alone shows blocked weeks; the Review/Results ribbons only carry the
+ * exception dot, which is not coach-specific.
+ */
+function renderBlockingContext() {
+  const eng = hasCoreUploads() ? computeEngineState() : null;
+
+  const exceptionWeeksByCoach = new Map();
+  const exceptionWeeks = new Set();
+  (eng?.exceptions || []).forEach(({ coach, week }) => {
+    if (!exceptionWeeksByCoach.has(coach)) exceptionWeeksByCoach.set(coach, new Set());
+    exceptionWeeksByCoach.get(coach).add(week);
+    exceptionWeeks.add(week);
+  });
+
+  renderBlockingPanel(exceptionWeeksByCoach);
+
+  const weekStates = {};
+  exceptionWeeks.forEach((week) => {
+    weekStates[week] = { exceptions: true };
+  });
+  document.querySelectorAll('.ribbon-mount[data-ribbon]').forEach((mount) => {
+    renderTermRibbon(mount, { label: 'Term structure', weekStates });
+  });
 }
 
 // ---- Export settings (SPEC.md §7.2) ----
@@ -1126,6 +1565,7 @@ function setupExportSettings() {
 function startOver(alsoClearSettings) {
   clearAllUploads();
   clearAlerts();
+  setBlockingSheetOpen(false);
 
   if (alsoClearSettings) {
     clearSettings();
@@ -1133,6 +1573,9 @@ function startOver(alsoClearSettings) {
     state.mode = 'auto';
     state.campusId = DEFAULT_CAMPUS_ID;
     state.exportMapping = getDefaultMapping();
+    state.blocks = [];
+    state.blockingCoach = null;
+    showBlockingNotice('');
     campusSelect.value = DEFAULT_CAMPUS_ID;
     renderCampusNotice();
     startDateInput.value = '';
@@ -1225,7 +1668,7 @@ function init() {
   // Display-only term ribbon (DESIGN.md §3.1) on Review and Results. It is
   // also the basis for the §11 blocking grid, which reuses ribbon.js.
   guard('drawing the term ribbon', () => {
-    document.querySelectorAll('.ribbon-mount').forEach((mount) => {
+    document.querySelectorAll('.ribbon-mount[data-ribbon]').forEach((mount) => {
       renderTermRibbon(mount, { label: 'Term structure' });
     });
   });
@@ -1233,7 +1676,10 @@ function init() {
   UPLOAD_KEYS.forEach((key) => guard(`setting up the ${UPLOAD_LABELS[key]} upload`, () => setupUpload(key)));
   mustFind('clear-uploads-btn').addEventListener('click', guarded('clearing the uploads', clearAllUploads));
 
+  state.blocks = sanitiseBlocks(getBlocks());
+
   setupStartOver();
+  guard('setting up the blocked weeks and dates panel', setupBlockingPanel);
   guard('setting up the export settings panel', setupExportSettings);
 
   renderStep();

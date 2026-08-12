@@ -25,6 +25,9 @@ const DEFAULT_FIELDS = [
   ['startDateTime', 'Meeting Start Date & Time'],
   ['endDateTime', 'Meeting End Date & Time'],
   ['meetingStatus', 'Meeting Status'],
+  // Appended to the §7.1 defaults by SPEC.md §11.4: blank unless the blocking
+  // post-pass moved the row, in which case it carries the week it moved from.
+  ['rescheduledFromWeek', 'Rescheduled From Week'],
 ];
 
 /**
@@ -161,6 +164,9 @@ function buildWorkbookAoa(appointments, columns) {
       if (col.type === 'constant') return col.value ?? '';
       const value = valueForField(col.field, row);
       if (col.field === 'date') return value;
+      // Blank on every row that was never moved (§11.4), so it stays an empty
+      // cell rather than becoming a misleading 0.
+      if (col.field === 'rescheduledFromWeek') return value === '' ? '' : Number(value);
       if (NUMERIC_FIELDS.has(col.field)) return Number(value);
       return value === '' ? '' : String(value);
     })

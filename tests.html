@@ -32,9 +32,15 @@ import {
   computeQuotas,
   schedule,
   expandToAppointments,
+  applyBlocks,
+  weekAndDayForDate,
+  blockOfWeek,
+  weeksInBlock,
+  blockedExceptionReason,
   weeksForOffset,
   minutesToTime,
   serviceNameFor,
+  BLOCK_WEEKS,
   MEETING_STATUS,
   REASONS,
 } from './js/scheduler.js';
@@ -596,6 +602,334 @@ test('pre-allocated mode satisfies the same invariants', () => {
       assert(!(block.day === r.day && block.start < t(r.endTime) && t(r.startTime) < block.end), 'class clash');
     });
   });
+});
+
+// ---- §11 blocked weeks/dates ----
+
+group('§11.1 — block structure');
+
+test('the term divides into blocks 1–3, 5–7, 9–11, 13–15', () => {
+  assertDeep(BLOCK_WEEKS, [[1, 2, 3], [5, 6, 7], [9, 10, 11], [13, 14, 15]]);
+  assertDeep([1, 2, 3].map(blockOfWeek), [1, 1, 1]);
+  assertDeep([5, 7, 9, 11, 13, 15].map(blockOfWeek), [2, 2, 3, 3, 4, 4]);
+  assertDeep([4, 8, 12].map(blockOfWeek), [null, null, null], 'weeks 4/8/12 belong to no block');
+  assertDeep(weeksInBlock(2), [5, 6, 7]);
+});
+
+test('every offset puts exactly one meeting in each block (§11.1)', () => {
+  [1, 2, 3].forEach((offset) => {
+    assertDeep(weeksForOffset(offset).map(blockOfWeek), [1, 2, 3, 4], `offset ${offset}`);
+  });
+});
+
+test('a date resolves to its term week and weekday (§11.2)', () => {
+  assertDeep(weekAndDayForDate('2026-09-07', START_MONDAY), { week: 1, day: 'Monday' });
+  assertDeep(weekAndDayForDate('2026-09-08', START_MONDAY), { week: 1, day: 'Tuesday' });
+  assertDeep(weekAndDayForDate('2026-09-16', START_MONDAY), { week: 2, day: 'Wednesday' });
+  assertDeep(weekAndDayForDate('2026-12-20', START_MONDAY), { week: 15, day: 'Sunday' });
+  assertEqual(weekAndDayForDate('2026-09-06', START_MONDAY), null, 'the day before week 1 is outside the term');
+  assertEqual(weekAndDayForDate('2026-12-21', START_MONDAY), null, 'the day after week 15 is outside the term');
+});
+
+group('§11.3 — redistribution order');
+
+// One coach, two weekday slots, so each resolution step can be forced.
+const BLOCK_SLOTS = buildSlots(
+  [avail('Coach A', 'Monday', '09:00', '10:00', 'C-A', 'a@example.com'),
+   avail('Coach A', 'Tuesday', '09:00', '10:00', 'C-A', 'a@example.com')],
+  []
+);
+const MON = BLOCK_SLOTS.find((s) => s.day === 'Monday');
+const TUE = BLOCK_SLOTS.find((s) => s.day === 'Tuesday');
+
+const assign = (student, slot, offset) => ({ student, coach: slot.coach, slot, offset });
+const rowsFor = (assignments) => expandToAppointments(assignments, START_MONDAY, LONDON);
+const cellOf = (r) => `${r.coachName}/${r.day}/${r.startTime}/wk${r.weekNumber}`;
+const findRow = (rows, id, meeting) => rows.find((r) => r.contactSfId === id && r.meetingNumber === meeting);
+
+test('(1) a displaced meeting keeps its day and time in another week of the block', () => {
+  const [s1] = students(1);
+  const rows = rowsFor([assign(s1, MON, 1)]); // weeks 1, 5, 9, 13
+  const { appointments, exceptions, movedCount } = applyBlocks(rows, [{ coach: 'Coach A', week: 1 }], BLOCK_SLOTS);
+  assertEqual(exceptions.length, 0);
+  assertEqual(movedCount, 1);
+  const moved = findRow(appointments, 'S1', 1);
+  assertEqual(cellOf(moved), 'Coach A/Monday/09:00/wk2', 'same slot, next week of block 1');
+  assertEqual(moved.rescheduledFromWeek, 1);
+  assertEqual(moved.date, '2026-09-14', 'week 2 Monday');
+  assertEqual(moved.startDateTime, '2026-09-14T09:00:00+01:00', 'the export instant moves with the row');
+});
+
+test('(1) earlier weeks of the block are tried first', () => {
+  const [s1] = students(1);
+  const rows = rowsFor([assign(s1, MON, 3)]); // weeks 3, 7, 11, 15
+  const { appointments } = applyBlocks(rows, [{ coach: 'Coach A', week: 3 }], BLOCK_SLOTS);
+  assertEqual(cellOf(findRow(appointments, 'S1', 1)), 'Coach A/Monday/09:00/wk1', 'week 1 before week 2');
+});
+
+test('(1) weeks whose (slot, week) is occupied are skipped', () => {
+  const [s1, s2] = students(2);
+  const rows = rowsFor([assign(s1, MON, 1), assign(s2, MON, 2)]); // week 2 is s2's
+  const { appointments, exceptions } = applyBlocks(rows, [{ coach: 'Coach A', week: 1 }], BLOCK_SLOTS);
+  assertEqual(exceptions.length, 0);
+  assertEqual(cellOf(findRow(appointments, 'S1', 1)), 'Coach A/Monday/09:00/wk3');
+  assertEqual(cellOf(findRow(appointments, 'S2', 1)), 'Coach A/Monday/09:00/wk2', 'the occupying meeting does not move');
+  assertEqual(findRow(appointments, 'S2', 1).rescheduledFromWeek, '', 'an unmoved row carries no from-week');
+});
+
+test('(2) with the same slot full, any free (slot, week) of the coach is used — week order first', () => {
+  // Tuesday 09:00 is taken in all three weeks of block 1; Monday 09:00 is free
+  // in week 1 only (s4/s5 hold weeks 2 and 3).
+  const [s1, s2, s3, s4, s5] = students(5);
+  const rows = rowsFor([
+    assign(s1, TUE, 1), assign(s2, TUE, 2), assign(s3, TUE, 3),
+    assign(s4, MON, 2), assign(s5, MON, 3),
+  ]);
+  const blocks = [{ coach: 'Coach A', week: 1, day: 'Tuesday' }]; // a date block
+  const { appointments, exceptions, movedCount } = applyBlocks(rows, blocks, BLOCK_SLOTS);
+  assertEqual(exceptions.length, 0);
+  assertEqual(movedCount, 1);
+  const moved = findRow(appointments, 'S1', 1);
+  assertEqual(cellOf(moved), 'Coach A/Monday/09:00/wk1', 'week 1 first, then the coach slot order');
+  assertEqual(moved.rescheduledFromWeek, 1, 'the from-week is recorded even when the week is unchanged');
+});
+
+test('(2) the coach slot order (§4.6) picks the slot within the chosen week', () => {
+  // Three slots at 09:00, 09:30, 10:00. All three offsets sit on 09:30, so
+  // rule (1) has nowhere to go and rule (2) takes the first free (slot, week):
+  // week 1 is blocked outright, so week 2 — and there the coach's slot order
+  // puts 09:00 ahead of 10:00.
+  const wide = buildSlots([avail('Coach A', 'Monday', '09:00', '11:00')], []);
+  const [s1, s2, s3] = students(3);
+  const rows = rowsFor([assign(s1, wide[1], 1), assign(s2, wide[1], 2), assign(s3, wide[1], 3)]);
+  const { appointments, exceptions } = applyBlocks(rows, [{ coach: 'Coach A', week: 1 }], wide);
+  assertEqual(exceptions.length, 0);
+  assertEqual(cellOf(findRow(appointments, 'S1', 1)), 'Coach A/Monday/09:00/wk2');
+});
+
+test('(3) with no free (slot, week) left in the block the meeting becomes an exception', () => {
+  const [s1, s2, s3] = students(3);
+  const rows = rowsFor([assign(s1, MON, 1), assign(s2, MON, 2), assign(s3, MON, 3)]);
+  const blocks = [{ coach: 'Coach A', week: 1 }, { coach: 'Coach A', week: 2 }, { coach: 'Coach A', week: 3 }];
+  const { appointments, exceptions } = applyBlocks(rows, blocks, BLOCK_SLOTS);
+
+  assertEqual(exceptions.length, 3, 'one exception per student for block 1');
+  exceptions.forEach((ex) => {
+    assertEqual(ex.reason, 'no free slot in block 1 — coach blocked');
+    assertEqual(ex.block, 1);
+    assertEqual(ex.meetingNumber, 1);
+    assertEqual(ex.coach, 'Coach A');
+  });
+  assertEqual(blockedExceptionReason(3), 'no free slot in block 3 — coach blocked');
+  assertEqual(appointments.length, 9, 'the other three meetings of each student survive');
+  assertDeep(
+    ['S1', 'S2', 'S3'].map((id) => appointments.filter((r) => r.contactSfId === id).length),
+    [3, 3, 3]
+  );
+});
+
+test('a block on one coach never moves another coach meetings', () => {
+  const [s1, s2] = students(2);
+  const rows = rowsFor([assign(s1, MON, 1)]).concat(
+    expandToAppointments([{ student: s2, coach: 'Coach B', slot: { coach: 'Coach B', day: 'Monday', start: t('09:00'), end: t('10:00'), coachSfId: '', coachEmail: '' }, offset: 1 }], START_MONDAY, LONDON)
+  );
+  const slots = [...BLOCK_SLOTS, { coach: 'Coach B', day: 'Monday', start: t('09:00'), end: t('10:00'), coachSfId: '', coachEmail: '' }];
+  const { appointments } = applyBlocks(rows, [{ coach: 'Coach A', week: 1 }], slots);
+  assertEqual(cellOf(findRow(appointments, 'S2', 1)), 'Coach B/Monday/09:00/wk1', 'Coach B is untouched');
+  assertEqual(cellOf(findRow(appointments, 'S1', 1)), 'Coach A/Monday/09:00/wk2');
+});
+
+test('blocking week 4, 8 or 12 changes nothing (§11.2 no-op)', () => {
+  const [s1] = students(1);
+  const rows = rowsFor([assign(s1, MON, 1)]);
+  const before = rows.map(cellOf);
+  const { appointments, exceptions, movedCount } = applyBlocks(
+    rows, [{ coach: 'Coach A', week: 4 }, { coach: 'Coach A', week: 8 }, { coach: 'Coach A', week: 12 }], BLOCK_SLOTS
+  );
+  assertDeep(appointments.map(cellOf), before);
+  assertEqual(movedCount, 0);
+  assertEqual(exceptions.length, 0);
+});
+
+test('with no blocks the post-pass returns the schedule unchanged', () => {
+  const { appointments, exceptions, movedCount } = applyBlocks(APPOINTMENTS, [], FIXTURE_SLOTS);
+  assertDeep(appointments.map(cellOf), APPOINTMENTS.map(cellOf));
+  assertEqual(movedCount, 0);
+  assertEqual(exceptions.length, 0);
+  assert(appointments.every((r) => r.rescheduledFromWeek === ''), 'no row claims to have been rescheduled');
+});
+
+test('the post-pass is deterministic and does not mutate its input', () => {
+  const [s1, s2] = students(2);
+  const rows = rowsFor([assign(s1, MON, 1), assign(s2, TUE, 1)]);
+  const blocks = [{ coach: 'Coach A', week: 1 }];
+  const before = rows.map((r) => `${r.contactSfId}|${r.meetingNumber}|${cellOf(r)}`);
+  const first = applyBlocks(rows, blocks, BLOCK_SLOTS);
+  const second = applyBlocks(rows, blocks, BLOCK_SLOTS);
+  assertEqual(first.movedCount, 2, 'both week-1 meetings move');
+  const shape = (result) => ({
+    rows: result.appointments.map((r) => `${r.contactSfId}|${r.meetingNumber}|${cellOf(r)}|${r.rescheduledFromWeek}`),
+    exceptions: result.exceptions.map((e) => `${e.student.contactSfId}|${e.meetingNumber}|${e.reason}`),
+  });
+  assertDeep(shape(first), shape(second));
+  assertDeep(rows.map((r) => `${r.contactSfId}|${r.meetingNumber}|${cellOf(r)}`), before,
+    'the input rows are untouched');
+});
+
+// ---- §11.5 invariants after redistribution ----
+
+group('§11.5 — invariants after redistribution');
+
+// A whole week for Coach A and a single Tuesday date for Coach B, over a run
+// with spare capacity (12 of the fixture's 30 places) so meetings really are
+// rebooked rather than all falling through to exceptions.
+const SLACK_QUOTAS = computeQuotas(['Coach A', 'Coach B'], { 'Coach A': 1, 'Coach B': 0.5 }, 12, slotCountsOf(FIXTURE_SLOTS));
+const SLACK_RUN = schedule(students(12), FIXTURE_SLOTS, 'auto', SLACK_QUOTAS);
+const SLACK_APPOINTMENTS = expandToAppointments(SLACK_RUN.assignments, START_MONDAY, LONDON);
+
+const BLOCKED_DATE = '2026-10-13'; // Tuesday of week 6
+const RESOLVED_DATE = weekAndDayForDate(BLOCKED_DATE, START_MONDAY);
+const RUN_BLOCKS = [
+  { coach: 'Coach A', week: 1 },
+  { coach: 'Coach B', week: RESOLVED_DATE.week, day: RESOLVED_DATE.day },
+];
+const BLOCKED_RUN = applyBlocks(SLACK_APPOINTMENTS, RUN_BLOCKS, FIXTURE_SLOTS, { timeZone: LONDON, startMonday: START_MONDAY });
+const BLOCKED_ROWS = BLOCKED_RUN.appointments;
+const ORIGINAL_BY_MEETING = new Map(SLACK_APPOINTMENTS.map((r) => [`${r.contactSfId}|${r.meetingNumber}`, r]));
+
+test('the run really is disturbed (otherwise the assertions below prove nothing)', () => {
+  assert(BLOCKED_RUN.movedCount > 0, `expected some meetings to move, moved ${BLOCKED_RUN.movedCount}`);
+  assertEqual(RESOLVED_DATE.day, 'Tuesday');
+});
+
+test('no appointment lands on a blocked coach-week or coach-date', () => {
+  BLOCKED_ROWS.forEach((r) => {
+    RUN_BLOCKS.forEach((b) => {
+      const hit = b.coach === r.coachName && b.week === r.weekNumber && (!b.day || b.day === r.day);
+      assert(!hit, `${r.contactSfId} still sits on a blocked cell: ${cellOf(r)}`);
+    });
+  });
+});
+
+test('every moved appointment keeps its coach and stays inside its original block', () => {
+  const moved = BLOCKED_ROWS.filter((r) => r.rescheduledFromWeek !== '');
+  assert(moved.length > 0, 'at least one row moved');
+  moved.forEach((r) => {
+    const original = ORIGINAL_BY_MEETING.get(`${r.contactSfId}|${r.meetingNumber}`);
+    assertEqual(r.coachName, original.coachName, `${r.contactSfId} changed coach`);
+    assertEqual(r.rescheduledFromWeek, original.weekNumber, 'from-week is the week it left');
+    assertEqual(blockOfWeek(r.weekNumber), blockOfWeek(original.weekNumber), `${r.contactSfId} left its block`);
+    assertEqual(r.meetingNumber, blockOfWeek(r.weekNumber), 'meeting N stays in block N');
+    assertEqual(r.serviceName, serviceNameFor(r.meetingNumber));
+  });
+});
+
+test('unmoved appointments are untouched and carry a blank Rescheduled From Week', () => {
+  BLOCKED_ROWS.filter((r) => r.rescheduledFromWeek === '').forEach((r) => {
+    const original = ORIGINAL_BY_MEETING.get(`${r.contactSfId}|${r.meetingNumber}`);
+    assertEqual(cellOf(r), cellOf(original), `${r.contactSfId} meeting ${r.meetingNumber} moved without saying so`);
+  });
+});
+
+test('no coach is double-booked after redistribution', () => {
+  const seen = new Set();
+  BLOCKED_ROWS.forEach((r) => {
+    const key = `${r.coachName}|${r.date}|${r.startTime}`;
+    assert(!seen.has(key), `double-booked: ${key}`);
+    seen.add(key);
+  });
+});
+
+test('no student is double-booked after redistribution', () => {
+  const seen = new Set();
+  BLOCKED_ROWS.forEach((r) => {
+    const key = `${r.contactSfId}|${r.date}|${r.startTime}`;
+    assert(!seen.has(key), `student double-booked: ${key}`);
+    seen.add(key);
+  });
+});
+
+test('no appointment lands in week 4, 8 or 12 after redistribution', () => {
+  assertEqual(BLOCKED_ROWS.filter((r) => [4, 8, 12].includes(r.weekNumber)).length, 0);
+});
+
+test('no appointment overlaps a class block after redistribution', () => {
+  BLOCKED_ROWS.forEach((r) => {
+    FIXTURE_CLASSES.forEach((block) => {
+      const clash = block.day === r.day && block.start < t(r.endTime) && t(r.startTime) < block.end;
+      assert(!clash, `${r.day} ${r.startTime}–${r.endTime} clashes with a class block`);
+    });
+  });
+});
+
+test('every appointment still sits inside its coach availability', () => {
+  BLOCKED_ROWS.forEach((r) => {
+    const inside = FIXTURE_AVAILABILITY.some(
+      (b) => b.coachName === r.coachName && b.day === r.day && b.start <= t(r.startTime) && t(r.endTime) <= b.end
+    );
+    assert(inside, `${r.coachName} ${r.day} ${r.startTime} is outside their availability`);
+  });
+});
+
+test('each student still has one meeting per block, minus any exception', () => {
+  const byStudent = new Map();
+  BLOCKED_ROWS.forEach((r) => {
+    if (!byStudent.has(r.contactSfId)) byStudent.set(r.contactSfId, []);
+    byStudent.get(r.contactSfId).push(blockOfWeek(r.weekNumber));
+  });
+  const exceptionCounts = new Map();
+  BLOCKED_RUN.exceptions.forEach((e) => {
+    exceptionCounts.set(e.student.contactSfId, (exceptionCounts.get(e.student.contactSfId) || 0) + 1);
+  });
+  byStudent.forEach((blocks, id) => {
+    assertEqual(new Set(blocks).size, blocks.length, `student ${id} has two meetings in one block`);
+    assertEqual(blocks.length, 4 - (exceptionCounts.get(id) || 0), `student ${id} meeting count`);
+  });
+});
+
+test('rows stay sorted by date, then start time, then coach name (§7.1)', () => {
+  for (let i = 1; i < BLOCKED_ROWS.length; i++) {
+    const key = (r) => `${r.date}|${r.startTime}|${r.coachName}`;
+    assert(key(BLOCKED_ROWS[i - 1]) <= key(BLOCKED_ROWS[i]), `row ${i} out of order`);
+  }
+});
+
+test('a moved row start/end instants match its new day and time', () => {
+  BLOCKED_ROWS.filter((r) => r.rescheduledFromWeek !== '').forEach((r) => {
+    assertEqual(r.startDateTime.slice(0, 19), `${r.date}T${r.startTime}:00`, 'start instant follows the move');
+    assertEqual(Date.parse(r.endDateTime) - Date.parse(r.startDateTime), 60 * 60 * 1000, 'still 60 minutes');
+    assertEqual(r.dateValue.getDay(), (['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'].indexOf(r.day) + 1) % 7);
+  });
+});
+
+test('a coach blocked for a whole block yields exactly one exception per affected student', () => {
+  // Coach A is full (15 students across 5 slots), so every block-3 meeting of
+  // theirs is displaced with nowhere to go.
+  const blocks = [9, 10, 11].map((week) => ({ coach: 'Coach A', week }));
+  const { appointments, exceptions } = applyBlocks(FULL_APPOINTMENTS, blocks, FIXTURE_SLOTS);
+
+  const coachAStudents = new Set(FULL_APPOINTMENTS.filter((r) => r.coachName === 'Coach A').map((r) => r.contactSfId));
+  assert(coachAStudents.size > 0, 'Coach A has students');
+  assertEqual(exceptions.length, coachAStudents.size, 'exactly one exception per affected student');
+
+  const perStudent = new Map();
+  exceptions.forEach((e) => {
+    assertEqual(e.block, 3);
+    assertEqual(e.meetingNumber, 3);
+    assertEqual(e.reason, 'no free slot in block 3 — coach blocked');
+    assert(coachAStudents.has(e.student.contactSfId), 'only Coach A students are affected');
+    perStudent.set(e.student.contactSfId, (perStudent.get(e.student.contactSfId) || 0) + 1);
+  });
+  perStudent.forEach((count, id) => assertEqual(count, 1, `student ${id} should have one exception`));
+
+  coachAStudents.forEach((id) => {
+    const kept = appointments.filter((r) => r.contactSfId === id);
+    assertEqual(kept.length, 3, `student ${id} keeps their other three meetings`);
+    assertDeep(kept.map((r) => blockOfWeek(r.weekNumber)).sort(), [1, 2, 4]);
+  });
+
+  const coachBRows = appointments.filter((r) => r.coachName === 'Coach B');
+  assert(coachBRows.every((r) => r.rescheduledFromWeek === ''), 'Coach B is untouched');
 });
 
 // ---- render ----
