@@ -186,6 +186,30 @@
         <div class="ribbon-mount" data-ribbon="results"></div>
 
         <div id="results-content"></div>
+
+        <div class="card" id="export-settings-card">
+          <h2>
+            <button type="button" id="export-settings-toggle" class="export-settings-toggle" aria-expanded="false" aria-controls="export-settings-body">
+              Export settings
+              <span class="export-settings-caret" aria-hidden="true">&#9656;</span>
+            </button>
+          </h2>
+          <p class="help-text">Rename headers, reorder columns, include or exclude columns, or add fixed-value columns. Changes are saved automatically and applied to the preview and export.</p>
+          <div id="export-settings-body" hidden>
+            <div class="table-wrap" style="max-height:none">
+              <table id="mapping-table">
+                <thead>
+                  <tr><th>Order</th><th>Include</th><th>Header</th><th>Source / value</th><th></th></tr>
+                </thead>
+                <tbody id="mapping-tbody"></tbody>
+              </table>
+            </div>
+            <div class="export-settings-actions">
+              <button type="button" id="add-constant-btn" class="btn btn-secondary">Add constant column</button>
+              <button type="button" id="reset-mapping-btn" class="btn btn-destructive">Reset to defaults</button>
+            </div>
+          </div>
+        </div>
       </section>
 
     </main>

@@ -642,6 +642,85 @@ input:focus {
   font: 500 13px/18px var(--mono);
 }
 
+/* ---------- Results: summary + export ---------- */
+
+.summary-line {
+  color: var(--ink);
+  margin: 0 0 20px;
+}
+
+.export-settings-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  border: 0;
+  background: none;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+}
+
+.export-settings-caret {
+  color: var(--ink-2);
+}
+
+.export-settings-toggle[aria-expanded="true"] .export-settings-caret {
+  transform: rotate(90deg);
+}
+
+#export-settings-body {
+  margin-top: 16px;
+}
+
+.export-settings-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+#mapping-table input[type="text"] {
+  width: 100%;
+  min-width: 160px;
+}
+
+#mapping-table input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+}
+
+.icon-btn {
+  width: 28px;
+  height: 28px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+  font: 400 13px/1 var(--ui);
+}
+
+.icon-btn + .icon-btn {
+  margin-left: 4px;
+}
+
+.icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn-small {
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
+.field-source {
+  color: var(--ink-2);
+}
+
 /* ---------- §3.6 Blocking panel ---------- */
 
 .sheet {

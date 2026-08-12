@@ -1,9 +1,18 @@
 // UI wiring, state, step flow (SPEC.md §6).
 // Upload parsing/validation is wired against parse.js; Review and Results
-// are wired against scheduler.js (SPEC.md §5, §9). Export is a later
-// session's work.
+// are wired against scheduler.js (SPEC.md §5, §9); export (§7, default and
+// customisable) is wired against exporter.js.
 
-import { getStartDate, setStartDate, getMode, setMode, getFteMap, setFte } from './storage.js';
+import {
+  getStartDate,
+  setStartDate,
+  getMode,
+  setMode,
+  getFteMap,
+  setFte,
+  getExportMapping,
+  setExportMapping,
+} from './storage.js';
 import { renderTermRibbon } from './ribbon.js';
 import {
   parseClassSchedule,
@@ -20,6 +29,7 @@ import {
   MAX_STUDENTS_PER_SLOT,
   REASONS,
 } from './scheduler.js';
+import { getDefaultMapping, createConstantColumn, buildPreviewRows, exportAppointments, FIELD_LABELS } from './exporter.js';
 
 const STEPS = ['setup', 'upload', 'review', 'results'];
 
@@ -38,6 +48,7 @@ const state = {
   startDate: getStartDate() || null, // ISO yyyy-mm-dd, Monday-normalised
   mode: getMode() || 'auto',
   uploads: { classSchedule: null, coachAvailability: null, studentList: null, pairings: null },
+  exportMapping: getExportMapping() || getDefaultMapping(),
 };
 
 const startDateInput = document.getElementById('start-date-input');
@@ -626,6 +637,12 @@ function renderUnassignedTable(eng) {
     </div>`;
 }
 
+/**
+ * Appointments preview + export (SPEC.md §6, §7): the table reflects the
+ * current export mapping (order, renamed/excluded headers, constant
+ * columns) rather than a fixed column set, so what's on screen matches
+ * what "Export appointments" produces.
+ */
 function renderAppointmentsPreview(eng) {
   if (eng.appointments.length === 0) {
     return `
@@ -635,37 +652,51 @@ function renderAppointmentsPreview(eng) {
     </div>`;
   }
 
-  const preview = eng.appointments.slice(0, 50);
-  const rows = preview
-    .map(
-      (a) => `
-    <tr>
-      <td class="mono">${a.date}</td>
-      <td class="mono">${a.startTime}</td>
-      <td>${escapeHtml(a.studentName)}</td>
-      <td>${escapeHtml(a.coachName)}</td>
-      <td class="mono num">${a.weekNumber}</td>
-      <td class="mono num">${a.meetingNumber}</td>
-    </tr>`
-    )
-    .join('');
-
+  const { columns, rows } = buildPreviewRows(eng.appointments, state.exportMapping, 50);
   const note =
     eng.appointments.length > 50
-      ? `Showing the first 50 of ${eng.appointments.length} appointments.`
-      : `${eng.appointments.length} appointment${eng.appointments.length === 1 ? '' : 's'}.`;
+      ? `Showing the first 50 of ${eng.appointments.length} appointments, per the export mapping below.`
+      : `${eng.appointments.length} appointment${eng.appointments.length === 1 ? '' : 's'}, per the export mapping below.`;
+
+  const theadHtml = columns.length
+    ? columns.map((col) => `<th>${escapeHtml(col.header || '(untitled)')}</th>`).join('')
+    : '<th>&nbsp;</th>';
+  const tbodyHtml =
+    columns.length === 0
+      ? '<tr><td class="table-empty">All columns are excluded. Include at least one in Export settings.</td></tr>'
+      : rows
+          .map((cells) => `<tr>${cells.map((value) => `<td class="mono">${escapeHtml(String(value))}</td>`).join('')}</tr>`)
+          .join('');
+  const exportDisabled = columns.length === 0 ? ' disabled' : '';
 
   return `
     <div class="card">
-      <h2>Appointments</h2>
-      <p class="help-text">${note}</p>
+      <div class="section-head">
+        <div>
+          <h2>Appointments</h2>
+          <p class="help-text" style="margin:0">${note}</p>
+        </div>
+        <button type="button" id="export-btn" class="btn btn-primary"${exportDisabled}>Export appointments</button>
+      </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Date</th><th>Time</th><th>Student</th><th>Coach</th><th class="num">Week</th><th class="num">Meeting</th></tr></thead>
-          <tbody>${rows}</tbody>
+          <thead><tr>${theadHtml}</tr></thead>
+          <tbody>${tbodyHtml}</tbody>
         </table>
       </div>
     </div>`;
+}
+
+/** Re-queries and (re-)wires the Export button after every results-content re-render. */
+function attachExportButtonHandler() {
+  const btn = document.getElementById('export-btn');
+  if (!btn) return;
+  btn.addEventListener('click', () => {
+    if (!hasResultsInputs()) return;
+    const eng = computeEngineState();
+    if (eng.appointments.length === 0) return;
+    exportAppointments(eng.appointments, state.exportMapping);
+  });
 }
 
 function renderResults() {
@@ -687,16 +718,148 @@ function renderResults() {
   const parts = [renderUtilisationTable(eng), renderUnassignedTable(eng), renderAppointmentsPreview(eng)];
 
   container.innerHTML = parts.join('');
+  attachExportButtonHandler();
 }
 
 /**
  * Recomputes and re-renders Review and Results together, regardless of
  * which step is currently visible, so both stay in sync with uploads, mode,
- * FTE values, and start date (SPEC.md §5, §6).
+ * FTE values, start date, and the export mapping (SPEC.md §5, §6, §7).
  */
 function refreshComputedSteps() {
   renderReview();
   renderResults();
+}
+
+// ---- Export settings (SPEC.md §7.2) ----
+
+function persistExportMapping() {
+  setExportMapping(state.exportMapping);
+}
+
+function moveMappingColumn(index, direction) {
+  const newIndex = index + direction;
+  if (newIndex < 0 || newIndex >= state.exportMapping.length) return;
+  const [col] = state.exportMapping.splice(index, 1);
+  state.exportMapping.splice(newIndex, 0, col);
+  persistExportMapping();
+  renderMappingEditor();
+  renderResults();
+}
+
+function removeMappingColumn(index) {
+  state.exportMapping.splice(index, 1);
+  persistExportMapping();
+  renderMappingEditor();
+  renderResults();
+}
+
+function renderMappingEditor() {
+  const tbody = document.getElementById('mapping-tbody');
+  tbody.innerHTML = '';
+
+  state.exportMapping.forEach((col, index) => {
+    const tr = document.createElement('tr');
+
+    const orderTd = document.createElement('td');
+    const upBtn = document.createElement('button');
+    upBtn.type = 'button';
+    upBtn.className = 'icon-btn';
+    upBtn.textContent = '↑';
+    upBtn.setAttribute('aria-label', `Move "${col.header || 'column'}" up`);
+    upBtn.disabled = index === 0;
+    upBtn.addEventListener('click', () => moveMappingColumn(index, -1));
+    const downBtn = document.createElement('button');
+    downBtn.type = 'button';
+    downBtn.className = 'icon-btn';
+    downBtn.textContent = '↓';
+    downBtn.setAttribute('aria-label', `Move "${col.header || 'column'}" down`);
+    downBtn.disabled = index === state.exportMapping.length - 1;
+    downBtn.addEventListener('click', () => moveMappingColumn(index, 1));
+    orderTd.append(upBtn, downBtn);
+
+    const includeTd = document.createElement('td');
+    const includeCheckbox = document.createElement('input');
+    includeCheckbox.type = 'checkbox';
+    includeCheckbox.checked = col.included;
+    includeCheckbox.setAttribute('aria-label', `Include "${col.header || 'column'}" in the export`);
+    includeCheckbox.addEventListener('change', () => {
+      col.included = includeCheckbox.checked;
+      persistExportMapping();
+      renderResults();
+    });
+    includeTd.appendChild(includeCheckbox);
+
+    const headerTd = document.createElement('td');
+    const headerInput = document.createElement('input');
+    headerInput.type = 'text';
+    headerInput.value = col.header;
+    headerInput.setAttribute('aria-label', 'Column header');
+    headerInput.addEventListener('input', () => {
+      col.header = headerInput.value;
+      persistExportMapping();
+      renderResults();
+    });
+    headerTd.appendChild(headerInput);
+
+    const valueTd = document.createElement('td');
+    if (col.type === 'constant') {
+      const valueInput = document.createElement('input');
+      valueInput.type = 'text';
+      valueInput.value = col.value ?? '';
+      valueInput.setAttribute('aria-label', 'Fixed value for every row');
+      valueInput.addEventListener('input', () => {
+        col.value = valueInput.value;
+        persistExportMapping();
+        renderResults();
+      });
+      valueTd.appendChild(valueInput);
+    } else {
+      const label = document.createElement('span');
+      label.className = 'mono field-source';
+      label.textContent = FIELD_LABELS[col.field] || col.field;
+      valueTd.appendChild(label);
+    }
+
+    const removeTd = document.createElement('td');
+    if (col.type === 'constant') {
+      const removeBtn = document.createElement('button');
+      removeBtn.type = 'button';
+      removeBtn.className = 'btn btn-destructive btn-small';
+      removeBtn.textContent = 'Remove';
+      removeBtn.addEventListener('click', () => removeMappingColumn(index));
+      removeTd.appendChild(removeBtn);
+    }
+
+    tr.append(orderTd, includeTd, headerTd, valueTd, removeTd);
+    tbody.appendChild(tr);
+  });
+}
+
+function setupExportSettings() {
+  const toggleBtn = document.getElementById('export-settings-toggle');
+  const body = document.getElementById('export-settings-body');
+  toggleBtn.addEventListener('click', () => {
+    const expanded = toggleBtn.getAttribute('aria-expanded') === 'true';
+    toggleBtn.setAttribute('aria-expanded', String(!expanded));
+    body.hidden = expanded;
+  });
+
+  document.getElementById('add-constant-btn').addEventListener('click', () => {
+    state.exportMapping.push(createConstantColumn('New column', ''));
+    persistExportMapping();
+    renderMappingEditor();
+    renderResults();
+  });
+
+  document.getElementById('reset-mapping-btn').addEventListener('click', () => {
+    state.exportMapping = getDefaultMapping();
+    persistExportMapping();
+    renderMappingEditor();
+    renderResults();
+  });
+
+  renderMappingEditor();
 }
 
 function init() {
@@ -730,6 +893,8 @@ function init() {
 
   UPLOAD_KEYS.forEach(setupUpload);
   document.getElementById('clear-uploads-btn').addEventListener('click', clearAllUploads);
+
+  setupExportSettings();
 
   renderStep();
   refreshComputedSteps();
