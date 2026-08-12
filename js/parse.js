@@ -9,6 +9,13 @@
 
 import { getXLSX, XLSX_MISSING } from './xlsx-loader.js';
 import { describeError } from './errors.js';
+import {
+  buildClassBlocks,
+  classBlockKey,
+  minutesToHours,
+  minutesToTime,
+  CLASS_BLOCK_TOTAL_MINUTES,
+} from './scheduler.js';
 
 const DAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const DAY_ABBREVIATIONS = { mon: 'Monday', tue: 'Tuesday', wed: 'Wednesday', thu: 'Thursday', fri: 'Friday', sat: 'Saturday', sun: 'Sunday' };
@@ -95,8 +102,6 @@ async function readSheetRows(file) {
  */
 async function parseSheet(file, requiredColumns, parseRow) {
   const fileName = file.name;
-  const errors = [];
-  const warnings = [];
 
   let sheetRows;
   try {
@@ -105,14 +110,30 @@ async function parseSheet(file, requiredColumns, parseRow) {
     // A missing SheetJS is an app-level problem, not a problem with this
     // file — let it reach the global error surface unchanged.
     if (e && e.code === XLSX_MISSING) throw e;
-    addIssue(
-      errors,
-      fileName,
-      null,
-      `Could not read this file. Make sure it is a valid .xlsx file saved from Excel. (${describeError(e)})`
-    );
-    return { rows: [], errors, warnings };
+    return {
+      rows: [],
+      errors: [
+        {
+          file: fileName,
+          row: null,
+          message: `Could not read this file. Make sure it is a valid .xlsx file saved from Excel. (${describeError(e)})`,
+        },
+      ],
+      warnings: [],
+    };
   }
+
+  return parseSheetRows(fileName, sheetRows, requiredColumns, parseRow);
+}
+
+/**
+ * The sheet-shaped half of `parseSheet`: everything from the header row down,
+ * with no file or SheetJS involved. Split out so the validation rules can be
+ * exercised directly from tests.html against an array-of-arrays.
+ */
+function parseSheetRows(fileName, sheetRows, requiredColumns, parseRow) {
+  const errors = [];
+  const warnings = [];
 
   if (sheetRows.length === 0) {
     addIssue(errors, fileName, null, 'File contains no data rows.');
@@ -222,14 +243,113 @@ function parseDayAndTimeFields(raw, rowNumber, headerIndex, fileName, errors) {
   return ok ? { day, start, end } : null;
 }
 
-export async function parseClassSchedule(file) {
-  return parseSheet(file, ['Day', 'Start Time', 'End Time'], (raw, rowNumber, headerIndex, fileName, errors) => {
-    const timing = parseDayAndTimeFields(raw, rowNumber, headerIndex, fileName, errors);
-    if (!timing) return null;
-    const classNameCol = headerIndex['class name'];
-    const className = classNameCol !== undefined ? String(raw[classNameCol] ?? '').trim() : '';
-    return { day: timing.day, start: timing.start, end: timing.end, className };
+/**
+ * A cell that names exactly one class block. Two names in one cell (a comma,
+ * semicolon, slash, "&" or " and ") is rejected rather than guessed at:
+ * SPEC.md §3.1 gives every class row exactly one block.
+ */
+const MULTI_VALUE_PATTERN = /,|;|\/|\||&|\band\b|\+/i;
+
+function requiredClassBlock(raw, headerIndex, columnName, rowNumber, fileName, errors) {
+  const value = requiredText(raw, headerIndex, columnName, rowNumber, fileName, errors);
+  if (value === null) return null;
+  if (MULTI_VALUE_PATTERN.test(value)) {
+    addIssue(
+      errors,
+      fileName,
+      rowNumber,
+      `"${value}" names more than one class block. Put exactly one class block name in the ${columnName} column.`
+    );
+    return null;
+  }
+  return value;
+}
+
+/**
+ * SPEC.md §3.1 — each class block is one cohort's complete timetable and must
+ * total exactly 15 hours of class. The total is the sum of every class row in
+ * the block, so a block that is short or long is named here with the total it
+ * actually came to.
+ */
+function checkClassBlockTotals(fileName, rows, errors) {
+  buildClassBlocks(rows).forEach((block) => {
+    if (block.minutes === CLASS_BLOCK_TOTAL_MINUTES) return;
+    const firstRow = block.rowNumbers[0] ?? null;
+    const direction = block.minutes < CLASS_BLOCK_TOTAL_MINUTES ? 'short of' : 'over';
+    const difference = minutesToHours(Math.abs(block.minutes - CLASS_BLOCK_TOTAL_MINUTES));
+    addIssue(
+      errors,
+      fileName,
+      firstRow,
+      `Class block "${block.name}" totals ${minutesToHours(block.minutes)} hours across ${block.classes.length} class${
+        block.classes.length === 1 ? '' : 'es'
+      } — ${difference} hour${difference === 1 ? '' : 's'} ${direction} the required 15 hours. Adjust the class times for this block.`
+    );
   });
+}
+
+/**
+ * Two classes of the same block overlapping would make its hour total
+ * meaningless (the same hour counted twice), so they are a named error rather
+ * than a silent inflation of the 15-hour check. The same clock hour in two
+ * *different* blocks is normal and untouched.
+ */
+function checkClassOverlaps(fileName, rows, errors) {
+  buildClassBlocks(rows).forEach((block) => {
+    const byDay = new Map();
+    block.classes.forEach((row) => {
+      if (!byDay.has(row.day)) byDay.set(row.day, []);
+      const earlier = byDay.get(row.day).find((other) => other.start < row.end && row.start < other.end);
+      if (earlier) {
+        addIssue(
+          errors,
+          fileName,
+          row._row,
+          `Class block "${block.name}" has two overlapping classes on ${row.day}: ${minutesToTime(earlier.start)}–${minutesToTime(
+            earlier.end
+          )} (row ${earlier._row}) and ${minutesToTime(row.start)}–${minutesToTime(row.end)} (row ${row._row}).`
+        );
+      }
+      byDay.get(row.day).push(row);
+    });
+  });
+}
+
+const CLASS_SCHEDULE_COLUMNS = ['Class Block', 'Day', 'Start Time', 'End Time'];
+
+function parseClassScheduleRow(raw, rowNumber, headerIndex, fileName, errors) {
+  const classBlock = requiredClassBlock(raw, headerIndex, 'Class Block', rowNumber, fileName, errors);
+  const timing = parseDayAndTimeFields(raw, rowNumber, headerIndex, fileName, errors);
+  if (classBlock === null || !timing) return null;
+  const classNameCol = headerIndex['class name'];
+  const className = classNameCol !== undefined ? String(raw[classNameCol] ?? '').trim() : '';
+  return { classBlock, day: timing.day, start: timing.start, end: timing.end, className, _row: rowNumber };
+}
+
+/** The whole-file class checks, which only make sense once every row is parsed. */
+function finishClassSchedule(fileName, result) {
+  if (result.rows.length > 0) {
+    checkClassOverlaps(fileName, result.rows, result.errors);
+    checkClassBlockTotals(fileName, result.rows, result.errors);
+  }
+  return result;
+}
+
+/** The class-schedule rules applied to an already-read sheet (see parseSheetRows). */
+export function parseClassScheduleSheet(fileName, sheetRows) {
+  return finishClassSchedule(fileName, parseSheetRows(fileName, sheetRows, CLASS_SCHEDULE_COLUMNS, parseClassScheduleRow));
+}
+
+export async function parseClassSchedule(file) {
+  return finishClassSchedule(file.name, await parseSheet(file, CLASS_SCHEDULE_COLUMNS, parseClassScheduleRow));
+}
+
+/**
+ * The run's class blocks in first-appearance order, for the UI and the engine.
+ * Only cleanly parsed rows should be passed in.
+ */
+export function classBlocksOf(classRows) {
+  return buildClassBlocks(classRows);
 }
 
 /**
@@ -289,19 +409,30 @@ export async function parseCoachAvailability(file) {
   return result;
 }
 
-export async function parseStudentList(file) {
-  const result = await parseSheet(
-    file,
-    ['Contact SF ID', 'Student Name', 'Student Email'],
-    (raw, rowNumber, headerIndex, fileName, errors) => {
-      const contactSfId = requiredText(raw, headerIndex, 'Contact SF ID', rowNumber, fileName, errors);
-      const studentName = requiredText(raw, headerIndex, 'Student Name', rowNumber, fileName, errors);
-      const studentEmail = requiredEmail(raw, headerIndex, 'Student Email', rowNumber, fileName, errors);
-      if (contactSfId === null || studentName === null || studentEmail === null) return null;
-      return { contactSfId, studentName, studentEmail, _row: rowNumber };
-    }
-  );
+const STUDENT_LIST_COLUMNS = ['Contact SF ID', 'Student Name', 'Student Email', 'Class Block'];
 
+function parseStudentRow(raw, rowNumber, headerIndex, fileName, errors) {
+  const contactSfId = requiredText(raw, headerIndex, 'Contact SF ID', rowNumber, fileName, errors);
+  const studentName = requiredText(raw, headerIndex, 'Student Name', rowNumber, fileName, errors);
+  const studentEmail = requiredEmail(raw, headerIndex, 'Student Email', rowNumber, fileName, errors);
+  // SPEC.md §3.3: exactly one class block per student — blank, or two names
+  // in one cell, is an error rather than a guess.
+  const classBlock = requiredClassBlock(raw, headerIndex, 'Class Block', rowNumber, fileName, errors);
+  if (contactSfId === null || studentName === null || studentEmail === null || classBlock === null) return null;
+  return { contactSfId, studentName, studentEmail, classBlock, _row: rowNumber };
+}
+
+/** The student-list rules applied to an already-read sheet (see parseSheetRows). */
+export function parseStudentListSheet(fileName, sheetRows) {
+  return finishStudentList(fileName, parseSheetRows(fileName, sheetRows, STUDENT_LIST_COLUMNS, parseStudentRow));
+}
+
+export async function parseStudentList(file) {
+  return finishStudentList(file.name, await parseSheet(file, STUDENT_LIST_COLUMNS, parseStudentRow));
+}
+
+/** Duplicate-ID detection, which only makes sense once every row is parsed. */
+function finishStudentList(fileName, result) {
   if (result.rows.length === 0) return result;
 
   const rowsById = new Map();
@@ -314,15 +445,44 @@ export async function parseStudentList(file) {
   rowsById.forEach((rowNumbers, id) => {
     if (rowNumbers.length > 1) {
       duplicateIds.add(id);
-      addIssue(result.errors, file.name, rowNumbers[0], `Duplicate Contact SF ID "${id}" appears in rows ${rowNumbers.join(', ')}.`);
+      addIssue(result.errors, fileName, rowNumbers[0], `Duplicate Contact SF ID "${id}" appears in rows ${rowNumbers.join(', ')}.`);
     }
   });
 
   result.rows = result.rows
     .filter((row) => !duplicateIds.has(row.contactSfId))
-    .map(({ contactSfId, studentName, studentEmail }) => ({ contactSfId, studentName, studentEmail }));
+    .map(({ contactSfId, studentName, studentEmail, classBlock, _row }) => ({
+      contactSfId,
+      studentName,
+      studentEmail,
+      classBlock,
+      _row,
+    }));
 
   return result;
+}
+
+/**
+ * Cross-file check (SPEC.md §8): a student naming a class block the class
+ * schedule does not define. A warning at parse time — the class schedule may
+ * simply not be uploaded yet — which becomes the `class block not found`
+ * unassigned reason at scheduling (SPEC.md §5.3).
+ */
+export function checkStudentClassBlocks(fileName, rows, classBlocks) {
+  const warnings = [];
+  const known = new Set((classBlocks || []).map((block) => block.id));
+  if (known.size === 0) return warnings;
+  const names = (classBlocks || []).map((block) => block.name).join(', ');
+  rows.forEach((row) => {
+    if (known.has(classBlockKey(row.classBlock))) return;
+    addIssue(
+      warnings,
+      fileName,
+      row._row,
+      `Class block "${row.classBlock}" is not in the class schedule, so this student cannot be scheduled. Known class blocks: ${names}.`
+    );
+  });
+  return warnings;
 }
 
 export async function parsePairings(file) {

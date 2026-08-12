@@ -29,6 +29,10 @@
 <script type="module">
 import {
   buildSlots,
+  buildClassBlocks,
+  classBlockKey,
+  slotAllowsClassBlock,
+  slotsForClassBlock,
   computeQuotas,
   schedule,
   expandToAppointments,
@@ -42,9 +46,11 @@ import {
   serviceNameFor,
   BLOCK_WEEKS,
   MEETING_STATUS,
+  CLASS_BLOCK_TOTAL_MINUTES,
   REASONS,
 } from './js/scheduler.js';
 import { formatIsoWithOffset, wallClockToInstant, campusOrDefault, CAMPUSES } from './js/timezone.js';
+import { parseClassScheduleSheet, parseStudentListSheet, checkStudentClassBlocks } from './js/parse.js';
 
 // ---- tiny assertion harness ----
 
@@ -930,6 +936,339 @@ test('a coach blocked for a whole block yields exactly one exception per affecte
 
   const coachBRows = appointments.filter((r) => r.coachName === 'Coach B');
   assert(coachBRows.every((r) => r.rescheduledFromWeek === ''), 'Coach B is untouched');
+});
+
+// ---- §3.1 class block validation (parser) ----
+
+group('§3.1 — class block validation');
+
+// The parser's sheet-level entry points take an array-of-arrays (row 1 =
+// headers), which is exactly what SheetJS hands them, so these exercise the
+// real validation rules without needing a workbook.
+const CLASS_HEADERS = ['Class Block', 'Day', 'Start Time', 'End Time', 'Class Name'];
+const STUDENT_HEADERS = ['Contact SF ID', 'Student Name', 'Student Email', 'Class Block'];
+
+/** Five 3-hour weekday classes for one block = exactly 15 hours. */
+const fifteenHourRows = (block, start = '09:00', end = '12:00') =>
+  ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'].map((day) => [block, day, start, end, 'Class']);
+
+const parseClasses = (rows) => parseClassScheduleSheet('classes.xlsx', [CLASS_HEADERS, ...rows]);
+const parseStudents = (rows) => parseStudentListSheet('students.xlsx', [STUDENT_HEADERS, ...rows]);
+const messages = (issues) => issues.map((issue) => issue.message).join('\n');
+
+test('a class block totalling exactly 15 hours is accepted', () => {
+  const result = parseClasses(fifteenHourRows('Block A'));
+  assertDeep(result.errors, [], messages(result.errors));
+  assertEqual(result.rows.length, 5);
+  const blocks = buildClassBlocks(result.rows);
+  assertEqual(blocks.length, 1);
+  assertEqual(blocks[0].minutes, CLASS_BLOCK_TOTAL_MINUTES);
+  assertEqual(blocks[0].hours, 15);
+});
+
+test('several class blocks can coexist in one run, each with its own 15 hours', () => {
+  const result = parseClasses([...fifteenHourRows('Block A'), ...fifteenHourRows('Block B', '13:00', '16:00')]);
+  assertDeep(result.errors, [], messages(result.errors));
+  const blocks = buildClassBlocks(result.rows);
+  assertDeep(blocks.map((b) => `${b.name}=${b.hours}`), ['Block A=15', 'Block B=15']);
+});
+
+test('a class block totalling less than 15 hours is rejected, naming the block and its total', () => {
+  const rows = fifteenHourRows('Block A').slice(0, 4); // 12 hours
+  const result = parseClasses(rows);
+  assertEqual(result.errors.length, 1, messages(result.errors));
+  assert(result.errors[0].message.includes('"Block A"'), 'the message names the block');
+  assert(result.errors[0].message.includes('12 hours'), `the message states the total: ${result.errors[0].message}`);
+  assert(result.errors[0].message.includes('3 hours short of'), result.errors[0].message);
+});
+
+test('a class block totalling more than 15 hours is rejected the same way', () => {
+  const rows = [...fifteenHourRows('Block A'), ['Block A', 'Saturday', '09:00', '11:30', 'Extra']]; // 17.5 hours
+  const result = parseClasses(rows);
+  assertEqual(result.errors.length, 1, messages(result.errors));
+  assert(result.errors[0].message.includes('17.5 hours'), result.errors[0].message);
+  assert(result.errors[0].message.includes('2.5 hours over'), result.errors[0].message);
+});
+
+test('one bad block is reported without condemning the good one', () => {
+  const result = parseClasses([...fifteenHourRows('Block A'), ...fifteenHourRows('Block B').slice(0, 3)]);
+  assertEqual(result.errors.length, 1);
+  assert(result.errors[0].message.includes('"Block B"'), result.errors[0].message);
+});
+
+test('a class row with no class block name is a row error', () => {
+  const rows = fifteenHourRows('Block A');
+  rows[2][0] = '';
+  const result = parseClasses(rows);
+  assert(result.errors.some((e) => e.row === 4 && e.message.includes('Missing Class Block')), messages(result.errors));
+});
+
+test('a class row naming two blocks at once is rejected', () => {
+  const rows = fifteenHourRows('Block A');
+  rows[0][0] = 'Block A, Block B';
+  const result = parseClasses(rows);
+  assert(result.errors.some((e) => e.message.includes('names more than one class block')), messages(result.errors));
+});
+
+test('a missing Class Block column rejects the file', () => {
+  const result = parseClassScheduleSheet('classes.xlsx', [
+    ['Day', 'Start Time', 'End Time'],
+    ['Monday', '09:00', '12:00'],
+  ]);
+  assertDeep(result.errors.map((e) => e.message), ['Missing required column "Class Block".']);
+});
+
+test('two overlapping classes in the same block are an error; the same hour in another block is not', () => {
+  const clash = parseClasses([
+    ['Block A', 'Monday', '09:00', '12:00', 'One'],
+    ['Block A', 'Monday', '11:00', '13:00', 'Two'],
+    ['Block A', 'Tuesday', '09:00', '19:00', 'Three'],
+  ]);
+  assert(clash.errors.some((e) => e.message.includes('overlapping classes on Monday')), messages(clash.errors));
+
+  const parallel = parseClasses([...fifteenHourRows('Block A'), ...fifteenHourRows('Block B')]);
+  assertDeep(parallel.errors, [], 'the same hours in two different blocks are normal');
+});
+
+test('existing class time rules still apply (day names, end after start)', () => {
+  const result = parseClasses([
+    ['Block A', 'Someday', '09:00', '12:00', ''],
+    ['Block A', 'Monday', '12:00', '09:00', ''],
+  ]);
+  assert(result.errors.some((e) => e.message.includes('Unknown day name "Someday"')), messages(result.errors));
+  assert(result.errors.some((e) => e.message.includes('End Time must be after Start Time')), messages(result.errors));
+});
+
+test('the student list requires a class block on every student', () => {
+  const ok = parseStudents([['S1', 'Jane Doe', 'jane@example.com', 'Block A']]);
+  assertDeep(ok.errors, [], messages(ok.errors));
+  assertEqual(ok.rows[0].classBlock, 'Block A');
+
+  const blank = parseStudents([['S1', 'Jane Doe', 'jane@example.com', '']]);
+  assert(blank.errors.some((e) => e.message.includes('Missing Class Block')), messages(blank.errors));
+
+  const missingColumn = parseStudentListSheet('students.xlsx', [
+    ['Contact SF ID', 'Student Name', 'Student Email'],
+    ['S1', 'Jane Doe', 'jane@example.com'],
+  ]);
+  assertDeep(missingColumn.errors.map((e) => e.message), ['Missing required column "Class Block".']);
+});
+
+test('a student cannot belong to two class blocks at once', () => {
+  const result = parseStudents([['S1', 'Jane Doe', 'jane@example.com', 'Block A / Block B']]);
+  assert(result.errors.some((e) => e.message.includes('names more than one class block')), messages(result.errors));
+  assertEqual(result.rows.length, 0, 'the ambiguous row is not scheduled from');
+});
+
+test('a student naming an unknown class block is warned about, listing the real blocks', () => {
+  const blocks = buildClassBlocks(parseClasses([...fifteenHourRows('Block A'), ...fifteenHourRows('Block B')]).rows);
+  const rows = parseStudents([
+    ['S1', 'Jane Doe', 'jane@example.com', 'Block A'],
+    ['S2', 'Sam Patel', 'sam@example.com', 'Block Z'],
+  ]).rows;
+  const warnings = checkStudentClassBlocks('students.xlsx', rows, blocks);
+  assertEqual(warnings.length, 1);
+  assertEqual(warnings[0].row, 3);
+  assert(warnings[0].message.includes('"Block Z" is not in the class schedule'), warnings[0].message);
+  assert(warnings[0].message.includes('Block A, Block B'), warnings[0].message);
+});
+
+test('class block names match case-insensitively after trimming', () => {
+  assertEqual(classBlockKey('  Block A '), 'block a');
+  const blocks = buildClassBlocks([
+    { classBlock: 'Block A', day: 'Monday', start: t('09:00'), end: t('10:00') },
+    { classBlock: ' block a ', day: 'Tuesday', start: t('09:00'), end: t('10:00') },
+  ]);
+  assertEqual(blocks.length, 1, 'one cohort, spelled two ways');
+  assertEqual(blocks[0].hours, 2);
+});
+
+// ---- §4.4a student-specific class clashes ----
+
+group('§4.4a — student-specific class clashes');
+
+// Coach A is free Monday 09:00–12:00 → 09:00, 09:30, 10:00, 10:30, 11:00.
+// Block A has a class 09:00–10:00 (rules out 09:00 and 09:30 for its students).
+// Block B has a class 11:00–12:00 (rules out 10:30 and 11:00 for its students).
+// 10:00 is the only window both cohorts can use, and no window is dead.
+const MB_CLASSES = [
+  { classBlock: 'Block A', day: 'Monday', start: t('09:00'), end: t('10:00'), className: 'A maths' },
+  { classBlock: 'Block B', day: 'Monday', start: t('11:00'), end: t('12:00'), className: 'B physics' },
+];
+const MB_AVAILABILITY = [avail('Coach A', 'Monday', '09:00', '12:00', 'C-A', 'a@example.com')];
+const MB_SLOTS = buildSlots(MB_AVAILABILITY, MB_CLASSES);
+const MB_BLOCKS = buildClassBlocks(MB_CLASSES);
+
+const studentsIn = (n, block, prefix = 'S') =>
+  students(n, prefix).map((student) => ({ ...student, classBlock: block }));
+
+const startsFor = (block) => slotsForClassBlock(MB_SLOTS, block).map((s) => minutesToTime(s.start));
+
+test('a class in one block no longer removes the slot for everybody', () => {
+  assertDeep(MB_SLOTS.map((s) => minutesToTime(s.start)), ['09:00', '09:30', '10:00', '10:30', '11:00']);
+  assertEqual(MB_SLOTS.length, buildSlots(MB_AVAILABILITY, []).length,
+    'a coach loses no capacity because one cohort has a class then');
+});
+
+test('each slot records exactly which class blocks it clashes with', () => {
+  const byStart = Object.fromEntries(MB_SLOTS.map((s) => [minutesToTime(s.start), s.blockedFor.join(',')]));
+  assertDeep(byStart, {
+    '09:00': 'block a', '09:30': 'block a', '10:00': '', '10:30': 'block b', '11:00': 'block b',
+  });
+  assert(slotAllowsClassBlock(MB_SLOTS[0], 'Block B'), '09:00 is fine for Block B');
+  assert(!slotAllowsClassBlock(MB_SLOTS[0], 'Block A'), '09:00 clashes with Block A');
+});
+
+test('a window every class block blocks is dropped as unusable', () => {
+  const slots = buildSlots(MB_AVAILABILITY, [
+    ...MB_CLASSES,
+    { classBlock: 'Block A', day: 'Monday', start: t('10:00'), end: t('11:00') },
+    { classBlock: 'Block B', day: 'Monday', start: t('10:00'), end: t('11:00') },
+  ]);
+  assertDeep(slots.map((s) => minutesToTime(s.start)), ['09:00', '11:00'],
+    '09:30–10:30 are now blocked for both cohorts');
+});
+
+test('a student in block A can take a slot that overlaps block B classes', () => {
+  assertDeep(startsFor('Block A'), ['10:00', '10:30', '11:00']);
+  const { assignments, unassigned } = schedule(studentsIn(1, 'Block A'), MB_SLOTS, 'auto', { 'Coach A': 5 }, ['Coach A'], { classBlocks: MB_BLOCKS });
+  assertEqual(unassigned.length, 0);
+  assertEqual(slotLabel(assignments[0].slot), 'Coach A/Monday/10:00');
+
+  // With 10:00 and 10:30 taken by earlier students, block A's fourth student
+  // lands on 11:00 — squarely inside block B's class, and legitimately so.
+  const many = schedule(studentsIn(7, 'Block A'), MB_SLOTS, 'auto', { 'Coach A': 15 }, ['Coach A'], { classBlocks: MB_BLOCKS });
+  assertEqual(many.unassigned.length, 0);
+  assertDeep(many.assignments.map((a) => `${minutesToTime(a.slot.start)}#${a.offset}`),
+    ['10:00#1', '10:00#2', '10:00#3', '10:30#1', '10:30#2', '10:30#3', '11:00#1']);
+});
+
+test('a student is never scheduled during a class in their own block', () => {
+  const all = [...studentsIn(6, 'Block A', 'A'), ...studentsIn(6, 'Block B', 'B')];
+  const { assignments, unassigned } = schedule(all, MB_SLOTS, 'auto', { 'Coach A': 15 }, ['Coach A'], { classBlocks: MB_BLOCKS });
+  assertEqual(unassigned.length, 0);
+  assignments.forEach((a) => {
+    assert(slotAllowsClassBlock(a.slot, a.student.classBlock),
+      `${a.student.contactSfId} (${a.student.classBlock}) was put at ${minutesToTime(a.slot.start)}`);
+  });
+  assertDeep(startsFor('Block B'), ['09:00', '09:30', '10:00']);
+});
+
+test('appointments never overlap a class in the student own block, and may overlap another block', () => {
+  const all = [...studentsIn(7, 'Block A', 'A'), ...studentsIn(6, 'Block B', 'B')];
+  const { assignments } = schedule(all, MB_SLOTS, 'auto', { 'Coach A': 15 }, ['Coach A'], { classBlocks: MB_BLOCKS });
+  const rows = expandToAppointments(assignments, START_MONDAY, LONDON);
+  assertEqual(rows.length, 52);
+  rows.forEach((row) => {
+    MB_CLASSES.forEach((cls) => {
+      const clash = cls.day === row.day && cls.start < t(row.endTime) && t(row.startTime) < cls.end;
+      if (classBlockKey(cls.classBlock) === classBlockKey(row.classBlock)) {
+        assert(!clash, `${row.contactSfId} clashes with their own class at ${row.startTime}`);
+      }
+    });
+    assertEqual(row.classBlock, row.contactSfId.startsWith('A') ? 'Block A' : 'Block B');
+  });
+  assert(rows.some((row) => row.classBlock === 'Block A' && row.startTime === '11:00'),
+    'a block A meeting really does sit inside block B class time');
+});
+
+test('a coach capacity counts every slot a cohort could use, not just the universally free ones', () => {
+  const counts = { 'Coach A': MB_SLOTS.length };
+  assertDeep(computeQuotas(['Coach A'], { 'Coach A': 1 }, 15, counts), { 'Coach A': 15 },
+    '5 slots × 3 offsets, undiminished by either cohort class');
+});
+
+test('a student whose class block leaves no free place is told so, not called a capacity problem', () => {
+  // Block B can only use 09:00, 09:30 and 10:00 — nine places. The tenth
+  // block B student has nowhere to go while block A places remain.
+  const all = [...studentsIn(9, 'Block B', 'B'), ...studentsIn(1, 'Block B', 'X')];
+  const { assignments, unassigned } = schedule(all, MB_SLOTS, 'auto', { 'Coach A': 15 }, ['Coach A'], { classBlocks: MB_BLOCKS });
+  assertEqual(assignments.length, 9);
+  assertDeep(unassigned.map((u) => `${u.student.contactSfId}:${u.reason}`), ['X1:no free slot outside their class block']);
+  assertEqual(REASONS.CLASS_CLASH, 'no free slot outside their class block');
+});
+
+test('a student with no class block, or an unknown one, is never scheduled', () => {
+  const all = [
+    { contactSfId: 'S1', studentName: 'Has one', studentEmail: 's1@example.com', classBlock: 'Block A' },
+    { contactSfId: 'S2', studentName: 'Has none', studentEmail: 's2@example.com', classBlock: '' },
+    { contactSfId: 'S3', studentName: 'Has a ghost', studentEmail: 's3@example.com', classBlock: 'Block Z' },
+    { contactSfId: 'S4', studentName: 'Has no field', studentEmail: 's4@example.com' },
+  ];
+  const { assignments, unassigned } = schedule(all, MB_SLOTS, 'auto', { 'Coach A': 15 }, ['Coach A'], { classBlocks: MB_BLOCKS });
+  assertDeep(assignments.map((a) => a.student.contactSfId), ['S1']);
+  assertDeep(unassigned.map((u) => `${u.student.contactSfId}:${u.reason}`),
+    ['S2:no class block', 'S3:class block not found', 'S4:no class block']);
+  assertEqual(REASONS.NO_CLASS_BLOCK, 'no class block');
+  assertEqual(REASONS.CLASS_BLOCK_NOT_FOUND, 'class block not found');
+});
+
+test('pre-allocated mode honours the student class block too', () => {
+  const twoCoaches = buildSlots([
+    avail('Coach A', 'Monday', '09:00', '12:00', 'C-A', 'a@example.com'),
+    avail('Coach B', 'Monday', '09:00', '12:00', 'C-B', 'b@example.com'),
+  ], MB_CLASSES);
+  const all = [...studentsIn(2, 'Block A', 'A'), ...studentsIn(2, 'Block B', 'B')];
+  const pairings = all.map((s) => ({ contactSfId: s.contactSfId, coachName: s.contactSfId.startsWith('A') ? 'Coach A' : 'Coach B' }));
+  const { assignments, unassigned } = schedule(all, twoCoaches, 'pre-allocated', pairings, ['Coach A', 'Coach B'], { classBlocks: MB_BLOCKS });
+  assertEqual(unassigned.length, 0);
+  assertDeep(assignments.map((a) => `${a.student.contactSfId}→${slotLabel(a.slot)}#${a.offset}`), [
+    'A1→Coach A/Monday/10:00#1', 'A2→Coach A/Monday/10:00#2',
+    'B1→Coach B/Monday/09:00#1', 'B2→Coach B/Monday/09:00#2',
+  ]);
+});
+
+test('pre-allocated overflow is still "coach over capacity", not a class clash', () => {
+  const slots = buildSlots([avail('Coach A', 'Monday', '09:00', '10:00')], []);
+  const all = studentsIn(4, 'Block A');
+  const pairings = all.map((s) => ({ contactSfId: s.contactSfId, coachName: 'Coach A' }));
+  const { unassigned } = schedule(all, slots, 'pre-allocated', pairings, ['Coach A'],
+    { classBlocks: [{ classBlock: 'Block A', day: 'Sunday', start: t('09:00'), end: t('10:00') }] });
+  assertDeep(unassigned.map((u) => u.reason), [REASONS.COACH_OVER_CAPACITY]);
+});
+
+test('scheduling with class blocks is deterministic', () => {
+  const all = [...studentsIn(5, 'Block A', 'A'), ...studentsIn(5, 'Block B', 'B')];
+  const shape = (r) => ({
+    assignments: r.assignments.map((a) => `${a.student.contactSfId}|${slotLabel(a.slot)}|${a.offset}`),
+    unassigned: r.unassigned.map((u) => `${u.student.contactSfId}|${u.reason}`),
+  });
+  const run = () => schedule(all, MB_SLOTS, 'auto', { 'Coach A': 15 }, ['Coach A'], { classBlocks: MB_BLOCKS });
+  assertDeep(shape(run()), shape(run()));
+});
+
+test('a run with a single class block behaves exactly as the old shared timetable did', () => {
+  const oneBlock = [
+    { classBlock: 'Block A', day: 'Monday', start: t('10:00'), end: t('11:00') },
+    { classBlock: 'Block A', day: 'Wednesday', start: t('09:00'), end: t('10:00') },
+  ];
+  const slots = buildSlots(FIXTURE_AVAILABILITY, oneBlock);
+  assertDeep(slots.map(slotLabel), FIXTURE_SLOTS.map(slotLabel),
+    'the same classes, now named as one block, remove the same windows');
+});
+
+test('displaced meetings are never rebooked onto the student own class (§11.3)', () => {
+  // Coach A holds only 10:30 and 11:00 on Monday, both barred for block B.
+  const slots = buildSlots(MB_AVAILABILITY, MB_CLASSES).filter((s) => minutesToTime(s.start) >= '10:00');
+  const [a1] = studentsIn(1, 'Block A', 'A');
+  const [b1] = studentsIn(1, 'Block B', 'B');
+  const at = (student, slot, offset) => ({ student, coach: slot.coach, slot, offset });
+  const ten = slots.find((s) => minutesToTime(s.start) === '10:00');
+  const rows = expandToAppointments([at(a1, ten, 1), at(b1, ten, 2)], START_MONDAY, LONDON);
+
+  const { appointments, exceptions } = applyBlocks(rows, [{ coach: 'Coach A', week: 1 }, { coach: 'Coach A', week: 2 }], slots);
+
+  const blockA = appointments.filter((r) => r.contactSfId === 'A1' && r.weekNumber <= 3);
+  assertEqual(blockA.length, 1, 'the block A student is rebooked somewhere');
+  const blockB = appointments.filter((r) => r.contactSfId === 'B1' && r.weekNumber <= 3);
+  assertEqual(blockB.length + exceptions.filter((e) => e.student.contactSfId === 'B1').length, 1);
+  appointments.forEach((row) => {
+    MB_CLASSES.forEach((cls) => {
+      if (classBlockKey(cls.classBlock) !== classBlockKey(row.classBlock)) return;
+      const clash = cls.day === row.day && cls.start < t(row.endTime) && t(row.startTime) < cls.end;
+      assert(!clash, `${row.contactSfId} was rebooked into their own class at ${row.startTime}`);
+    });
+  });
 });
 
 // ---- render ----
