@@ -1,11 +1,18 @@
 // UI wiring, state, step flow (SPEC.md §6).
-// Review (FTE editor, capacity table) is still a placeholder for a later
-// session; auto mode here uses the §5.1 default of 1.00 FTE per coach until
-// it exists. Results is wired to scheduler.js and exporter.js so the
-// appointment preview and export (§7) work end to end. Upload
-// parsing/validation is implemented here against parse.js.
+// Upload parsing/validation is wired against parse.js; Review and Results
+// are wired against scheduler.js (SPEC.md §5, §9); export (§7, default and
+// customisable) is wired against exporter.js.
 
-import { getStartDate, setStartDate, getMode, setMode, getExportMapping, setExportMapping } from './storage.js';
+import {
+  getStartDate,
+  setStartDate,
+  getMode,
+  setMode,
+  getFteMap,
+  setFte,
+  getExportMapping,
+  setExportMapping,
+} from './storage.js';
 import { renderTermRibbon } from './ribbon.js';
 import {
   parseClassSchedule,
@@ -14,7 +21,14 @@ import {
   parsePairings,
   checkPairingsReferences,
 } from './parse.js';
-import { buildSlots, computeQuotas, schedule as scheduleAppointments, expandToAppointments } from './scheduler.js';
+import {
+  buildSlots,
+  computeQuotas,
+  schedule,
+  expandToAppointments,
+  MAX_STUDENTS_PER_SLOT,
+  REASONS,
+} from './scheduler.js';
 import { getDefaultMapping, createConstantColumn, buildPreviewRows, exportAppointments, FIELD_LABELS } from './exporter.js';
 
 const STEPS = ['setup', 'upload', 'review', 'results'];
@@ -35,7 +49,6 @@ const state = {
   mode: getMode() || 'auto',
   uploads: { classSchedule: null, coachAvailability: null, studentList: null, pairings: null },
   exportMapping: getExportMapping() || getDefaultMapping(),
-  results: null, // { studentCount, scheduledCount, appointments, unassigned } or null until inputs are ready
 };
 
 const startDateInput = document.getElementById('start-date-input');
@@ -90,14 +103,14 @@ function handleStartDateChange() {
     dateNotice.hidden = true;
   }
 
-  refreshResults();
+  refreshComputedSteps();
 }
 
 function handleModeChange(mode) {
   state.mode = mode;
   setMode(mode);
   pairingsUploadCard.hidden = mode !== 'pre-allocated';
-  refreshResults();
+  refreshComputedSteps();
 }
 
 function renderStep() {
@@ -247,7 +260,7 @@ async function handleFileForKey(key, file) {
     renderUploadResult('pairings');
   }
 
-  refreshResults();
+  refreshComputedSteps();
 }
 
 function clearAllUploads() {
@@ -257,7 +270,7 @@ function clearAllUploads() {
     fileInput.value = '';
     renderUploadResult(key);
   });
-  refreshResults();
+  refreshComputedSteps();
 }
 
 function setupUpload(key) {
@@ -285,128 +298,436 @@ function setupUpload(key) {
   });
 }
 
-// ---- Results step ----
-//
-// Wires app.js to scheduler.js so the Results step and the exporter have
-// real appointments to show. There is no FTE editor yet (that belongs to
-// the Review step's coach-capacity table), so auto mode uses the spec
-// default of 1.00 FTE for every coach (SPEC.md §5.1) until one exists.
+// ---- Review & Results steps (SPEC.md §5, §6, §9) ----
 
-/** Rows for an upload, or null if it hasn't been provided or failed validation. */
-function getUsableUploadRows(key) {
-  const upload = state.uploads[key];
-  if (!upload || upload.result.errors.length > 0) return null;
-  return upload.result.rows;
+function capitalize(text) {
+  return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-function computeResults() {
-  const classRows = getUsableUploadRows('classSchedule');
-  const availabilityRows = getUsableUploadRows('coachAvailability');
-  const studentRows = getUsableUploadRows('studentList');
-  const pairingsRows = getUsableUploadRows('pairings');
+function hasCoreUploads() {
+  return Boolean(state.uploads.classSchedule && state.uploads.coachAvailability && state.uploads.studentList);
+}
 
-  const ready =
-    !!state.startDate &&
-    classRows !== null &&
-    availabilityRows !== null &&
-    studentRows !== null &&
-    (state.mode !== 'pre-allocated' || pairingsRows !== null);
+function hasResultsInputs() {
+  if (!hasCoreUploads()) return false;
+  if (state.mode === 'pre-allocated' && !state.uploads.pairings) return false;
+  return Boolean(state.startDate);
+}
 
-  if (!ready) {
-    state.results = null;
-    return;
-  }
+/**
+ * Runs the scheduling engine end-to-end against the current uploads, mode,
+ * FTE values, and start date. Cheap and pure, so it's safe to call on every
+ * render rather than caching — this is what keeps Review/Results in sync
+ * whenever an input changes.
+ */
+function computeEngineState() {
+  const availabilityRows = state.uploads.coachAvailability?.result.rows ?? [];
+  const classBlocks = state.uploads.classSchedule?.result.rows ?? [];
+  const studentRows = state.uploads.studentList?.result.rows ?? [];
+  const pairingRows = state.uploads.pairings?.result.rows ?? [];
 
-  const slots = buildSlots(availabilityRows, classRows);
-
-  const coachOrder = [];
+  const coaches = [];
+  const seenCoaches = new Set();
   availabilityRows.forEach((row) => {
-    if (!coachOrder.includes(row.coachName)) coachOrder.push(row.coachName);
+    if (!seenCoaches.has(row.coachName)) {
+      seenCoaches.add(row.coachName);
+      coaches.push(row.coachName);
+    }
   });
 
+  const slots = buildSlots(availabilityRows, classBlocks);
+
   const slotCounts = {};
+  coaches.forEach((c) => {
+    slotCounts[c] = 0;
+  });
   slots.forEach((slot) => {
     slotCounts[slot.coach] = (slotCounts[slot.coach] || 0) + 1;
   });
 
-  let assignments;
-  let unassigned;
+  const capacity = {};
+  coaches.forEach((c) => {
+    capacity[c] = (slotCounts[c] || 0) * MAX_STUDENTS_PER_SLOT;
+  });
+  const totalCapacity = coaches.reduce((sum, c) => sum + capacity[c], 0);
+  const studentCount = studentRows.length;
+
+  const fteMap = getFteMap();
+  const fte = {};
+  coaches.forEach((c) => {
+    const stored = Number(fteMap[c]);
+    fte[c] = Number.isFinite(stored) && stored > 0 ? stored : 1;
+  });
+
+  let quotas = {};
+  let assignments = [];
+  let unassigned = [];
+
   if (state.mode === 'pre-allocated') {
-    ({ assignments, unassigned } = scheduleAppointments(studentRows, slots, 'pre-allocated', pairingsRows, coachOrder));
+    ({ assignments, unassigned } = schedule(studentRows, slots, 'pre-allocated', pairingRows, coaches));
   } else {
-    const fte = {};
-    coachOrder.forEach((name) => {
-      fte[name] = 1;
-    });
-    const quotas = computeQuotas(coachOrder, fte, studentRows.length, slotCounts);
-    ({ assignments, unassigned } = scheduleAppointments(studentRows, slots, 'auto', quotas));
+    quotas = computeQuotas(coaches, fte, studentCount, slotCounts);
+    ({ assignments, unassigned } = schedule(studentRows, slots, 'auto', quotas));
   }
 
-  const appointments = expandToAppointments(assignments, state.startDate);
+  const appointments = state.startDate ? expandToAppointments(assignments, state.startDate) : [];
 
-  state.results = {
-    studentCount: studentRows.length,
-    scheduledCount: studentRows.length - unassigned.length,
-    appointments,
+  const scheduledByCoach = {};
+  coaches.forEach((c) => {
+    scheduledByCoach[c] = 0;
+  });
+  assignments.forEach((a) => {
+    scheduledByCoach[a.coach] = (scheduledByCoach[a.coach] || 0) + 1;
+  });
+
+  return {
+    coaches,
+    slots,
+    slotCounts,
+    capacity,
+    totalCapacity,
+    studentCount,
+    studentRows,
+    pairingRows,
+    fte,
+    quotas,
+    assignments,
     unassigned,
+    appointments,
+    scheduledByCoach,
   };
 }
 
-function renderResults() {
-  const emptyEl = document.getElementById('results-empty');
-  const summaryEl = document.getElementById('results-summary');
-  const unassignedCard = document.getElementById('unassigned-card');
-  const appointmentsCard = document.getElementById('appointments-card');
-  const exportBtn = document.getElementById('export-btn');
+function renderFteAndCapacityTable(eng) {
+  if (eng.coaches.length === 0) {
+    return `
+    <div class="card">
+      <h2>Coach capacity</h2>
+      <p class="help-text">FTE changes recalculate quotas immediately.</p>
+      <div class="table-wrap"><p class="table-empty">No coaches found in the availability file.</p></div>
+    </div>`;
+  }
 
-  if (!state.results) {
-    emptyEl.hidden = false;
-    summaryEl.hidden = true;
-    unassignedCard.hidden = true;
-    appointmentsCard.hidden = true;
+  const rows = eng.coaches
+    .map(
+      (c) => `
+    <tr>
+      <td>${escapeHtml(c)}</td>
+      <td class="mono num">${eng.slotCounts[c] || 0}</td>
+      <td class="mono num">${eng.capacity[c] || 0}</td>
+      <td><input type="number" class="fte" data-coach="${escapeHtml(c)}" min="0.05" max="1.00" step="0.05" value="${eng.fte[c].toFixed(2)}" aria-label="FTE for ${escapeHtml(c)}" /></td>
+      <td class="mono-500 num">${eng.quotas[c] || 0}</td>
+    </tr>`
+    )
+    .join('');
+
+  return `
+    <div class="card">
+      <h2>Coach capacity</h2>
+      <p class="help-text">FTE changes recalculate quotas immediately.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Coach</th><th class="num">Valid slots</th><th class="num">Capacity</th><th>FTE</th><th class="num">Quota</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+function attachFteInputHandlers() {
+  document.querySelectorAll('#review-content input.fte').forEach((input) => {
+    input.addEventListener('change', () => {
+      const coach = input.dataset.coach;
+      let value = Number(input.value);
+      if (!Number.isFinite(value)) value = 1;
+      value = Math.round(Math.min(1, Math.max(0.05, value)) * 100) / 100;
+      setFte(coach, value);
+      refreshComputedSteps();
+    });
+  });
+}
+
+/**
+ * Informational "requested" pairing count per coach for the pre-allocated
+ * coverage table — dedupes by first valid student row, same as
+ * scheduler.js's assignPreAllocated, but doesn't cap at capacity (that's
+ * what the "Status" column is for).
+ */
+function computeRequestedPairings(eng) {
+  const studentIds = new Set(eng.studentRows.map((s) => s.contactSfId));
+  const coachSet = new Set(eng.coaches);
+  const counts = {};
+  eng.coaches.forEach((c) => {
+    counts[c] = 0;
+  });
+
+  const seenStudents = new Set();
+  eng.pairingRows.forEach((row) => {
+    if (!studentIds.has(row.contactSfId) || seenStudents.has(row.contactSfId)) return;
+    seenStudents.add(row.contactSfId);
+    if (coachSet.has(row.coachName)) {
+      counts[row.coachName] = (counts[row.coachName] || 0) + 1;
+    }
+  });
+
+  return counts;
+}
+
+function renderPairingsCoverage(eng) {
+  if (eng.coaches.length === 0) {
+    return `
+    <div class="card">
+      <h2>Pairings coverage</h2>
+      <div class="table-wrap"><p class="table-empty">No coaches found in the availability file.</p></div>
+    </div>`;
+  }
+
+  const requested = computeRequestedPairings(eng);
+
+  const rows = eng.coaches
+    .map((c) => {
+      const req = requested[c] || 0;
+      const capacity = eng.capacity[c] || 0;
+      const statusChip =
+        req > capacity
+          ? `<span class="chip chip-exception">Over capacity by ${req - capacity}</span>`
+          : `<span class="chip chip-ok">OK</span>`;
+      return `
+    <tr>
+      <td>${escapeHtml(c)}</td>
+      <td class="mono num">${eng.slotCounts[c] || 0}</td>
+      <td class="mono num">${capacity}</td>
+      <td class="mono num">${req}</td>
+      <td>${statusChip}</td>
+    </tr>`;
+    })
+    .join('');
+
+  const reasonCounts = {};
+  eng.unassigned.forEach(({ reason }) => {
+    reasonCounts[reason] = (reasonCounts[reason] || 0) + 1;
+  });
+  const noPairing = reasonCounts[REASONS.NO_PAIRING] || 0;
+  const coachNotFound = reasonCounts[REASONS.COACH_NOT_FOUND] || 0;
+  const overCapacity = reasonCounts[REASONS.COACH_OVER_CAPACITY] || 0;
+  const validPairings = eng.studentCount - noPairing - coachNotFound - overCapacity;
+
+  const summaryBits = [`${validPairings} of ${eng.studentCount} students have a valid pairing`];
+  if (noPairing) summaryBits.push(`${noPairing} have no pairing`);
+  if (coachNotFound) summaryBits.push(`${coachNotFound} reference an unknown coach`);
+  if (overCapacity) summaryBits.push(`${overCapacity} exceed their coach's capacity`);
+
+  return `
+    <div class="card">
+      <h2>Pairings coverage</h2>
+      <p class="help-text">${summaryBits.join(' · ')}</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Coach</th><th class="num">Valid slots</th><th class="num">Capacity</th><th class="num">Paired students</th><th>Status</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+function renderReview() {
+  const container = document.getElementById('review-content');
+  const parts = [];
+
+  if (!hasCoreUploads()) {
+    const need =
+      state.mode === 'pre-allocated'
+        ? 'the class schedule, coach availability, student list, and pairings files'
+        : 'the class schedule, coach availability, and student list files';
+    const heading = state.mode === 'pre-allocated' ? 'Pairings coverage' : 'Coach capacity';
+    parts.push(`<div class="card"><h2>${heading}</h2><div class="table-wrap"><p class="table-empty">Upload ${need} to see capacity.</p></div></div>`);
+    container.innerHTML = parts.join('');
     return;
   }
 
-  const { studentCount, scheduledCount, appointments, unassigned } = state.results;
+  const eng = computeEngineState();
 
-  emptyEl.hidden = true;
-  summaryEl.hidden = false;
-  const unassignedChip =
-    unassigned.length > 0 ? ` · <span class="chip chip-exception">${unassigned.length} unassigned</span>` : '';
-  summaryEl.innerHTML =
-    `<span class="mono-500">${scheduledCount}</span> of <span class="mono-500">${studentCount}</span> students scheduled · ` +
-    `<span class="mono-500">${appointments.length}</span> appointments${unassignedChip}`;
-
-  unassignedCard.hidden = unassigned.length === 0;
-  if (unassigned.length > 0) {
-    document.getElementById('unassigned-tbody').innerHTML = unassigned
-      .map(
-        ({ student, reason }) =>
-          `<tr><td>${escapeHtml(student.studentName)} <span class="mono">${escapeHtml(student.contactSfId)}</span></td>` +
-          `<td><span class="chip chip-exception">${escapeHtml(reason)}</span></td></tr>`
-      )
-      .join('');
+  if (eng.totalCapacity < eng.studentCount) {
+    const shortBy = eng.studentCount - eng.totalCapacity;
+    parts.push(
+      `<div class="banner">Total capacity (${eng.totalCapacity}) is below the number of students (${eng.studentCount}). ${shortBy} student${shortBy === 1 ? '' : 's'} will be unassigned unless availability or FTE increases.</div>`
+    );
   }
 
-  appointmentsCard.hidden = false;
-
-  const { columns, rows } = buildPreviewRows(appointments, state.exportMapping, 50);
-  exportBtn.disabled = appointments.length === 0 || columns.length === 0;
-  const theadRow = document.getElementById('preview-thead-row');
-  const tbody = document.getElementById('preview-tbody');
-  if (columns.length === 0) {
-    theadRow.innerHTML = '<th>&nbsp;</th>';
-    tbody.innerHTML = '<tr><td class="table-empty">All columns are excluded. Include at least one in Export settings.</td></tr>';
+  if (state.mode === 'pre-allocated') {
+    if (!state.uploads.pairings) {
+      parts.push(`<div class="card"><h2>Pairings coverage</h2><div class="table-wrap"><p class="table-empty">Upload the pairings file to see coverage.</p></div></div>`);
+    } else {
+      parts.push(renderPairingsCoverage(eng));
+    }
   } else {
-    theadRow.innerHTML = columns.map((col) => `<th>${escapeHtml(col.header || '(untitled)')}</th>`).join('');
-    tbody.innerHTML = rows
-      .map((cells) => `<tr>${cells.map((value) => `<td class="mono">${escapeHtml(String(value))}</td>`).join('')}</tr>`)
-      .join('');
+    parts.push(renderFteAndCapacityTable(eng));
   }
+
+  container.innerHTML = parts.join('');
+
+  if (state.mode === 'auto') attachFteInputHandlers();
 }
 
-function refreshResults() {
-  computeResults();
+function renderUtilisationTable(eng) {
+  if (eng.coaches.length === 0) {
+    return `
+    <div class="card">
+      <h2>Coach utilisation</h2>
+      <div class="table-wrap"><p class="table-empty">No coaches found in the availability file.</p></div>
+    </div>`;
+  }
+
+  const rows = eng.coaches
+    .map((c) => {
+      const capacity = eng.capacity[c] || 0;
+      const scheduled = eng.scheduledByCoach[c] || 0;
+      const pct = capacity > 0 ? Math.round((scheduled / capacity) * 100) : 0;
+      return `
+    <tr>
+      <td>${escapeHtml(c)}</td>
+      <td class="mono num">${capacity}</td>
+      <td class="mono num">${scheduled}</td>
+      <td class="mono-500 num">${pct}%</td>
+    </tr>`;
+    })
+    .join('');
+
+  return `
+    <div class="card">
+      <h2>Coach utilisation</h2>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Coach</th><th class="num">Capacity</th><th class="num">Scheduled</th><th class="num">Utilisation</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+function renderUnassignedTable(eng) {
+  if (eng.unassigned.length === 0) {
+    return `
+    <div class="card">
+      <h2>Unassigned students</h2>
+      <div class="table-wrap"><p class="table-empty">All students were scheduled.</p></div>
+    </div>`;
+  }
+
+  const rows = eng.unassigned
+    .map(
+      ({ student, reason }) => `
+    <tr>
+      <td>${escapeHtml(student.studentName)} <span class="mono">${escapeHtml(student.contactSfId)}</span></td>
+      <td><span class="chip chip-exception">${escapeHtml(capitalize(reason))}</span></td>
+    </tr>`
+    )
+    .join('');
+
+  return `
+    <div class="card">
+      <h2>Unassigned students</h2>
+      <p class="help-text">${eng.unassigned.length} student${eng.unassigned.length === 1 ? '' : 's'} could not be scheduled.</p>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Student</th><th>Reason</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+/**
+ * Appointments preview + export (SPEC.md §6, §7): the table reflects the
+ * current export mapping (order, renamed/excluded headers, constant
+ * columns) rather than a fixed column set, so what's on screen matches
+ * what "Export appointments" produces.
+ */
+function renderAppointmentsPreview(eng) {
+  if (eng.appointments.length === 0) {
+    return `
+    <div class="card">
+      <h2>Appointments</h2>
+      <div class="table-wrap"><p class="table-empty">No appointments were scheduled.</p></div>
+    </div>`;
+  }
+
+  const { columns, rows } = buildPreviewRows(eng.appointments, state.exportMapping, 50);
+  const note =
+    eng.appointments.length > 50
+      ? `Showing the first 50 of ${eng.appointments.length} appointments, per the export mapping below.`
+      : `${eng.appointments.length} appointment${eng.appointments.length === 1 ? '' : 's'}, per the export mapping below.`;
+
+  const theadHtml = columns.length
+    ? columns.map((col) => `<th>${escapeHtml(col.header || '(untitled)')}</th>`).join('')
+    : '<th>&nbsp;</th>';
+  const tbodyHtml =
+    columns.length === 0
+      ? '<tr><td class="table-empty">All columns are excluded. Include at least one in Export settings.</td></tr>'
+      : rows
+          .map((cells) => `<tr>${cells.map((value) => `<td class="mono">${escapeHtml(String(value))}</td>`).join('')}</tr>`)
+          .join('');
+  const exportDisabled = columns.length === 0 ? ' disabled' : '';
+
+  return `
+    <div class="card">
+      <div class="section-head">
+        <div>
+          <h2>Appointments</h2>
+          <p class="help-text" style="margin:0">${note}</p>
+        </div>
+        <button type="button" id="export-btn" class="btn btn-primary"${exportDisabled}>Export appointments</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr>${theadHtml}</tr></thead>
+          <tbody>${tbodyHtml}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+/** Re-queries and (re-)wires the Export button after every results-content re-render. */
+function attachExportButtonHandler() {
+  const btn = document.getElementById('export-btn');
+  if (!btn) return;
+  btn.addEventListener('click', () => {
+    if (!hasResultsInputs()) return;
+    const eng = computeEngineState();
+    if (eng.appointments.length === 0) return;
+    exportAppointments(eng.appointments, state.exportMapping);
+  });
+}
+
+function renderResults() {
+  const container = document.getElementById('results-content');
+  const sub = document.getElementById('results-sub');
+
+  if (!hasResultsInputs()) {
+    sub.textContent = 'The schedule, exceptions, and export appear here.';
+    container.innerHTML = `<div class="card"><div class="table-wrap"><p class="table-empty">Complete setup and upload to see results.</p></div></div>`;
+    return;
+  }
+
+  const eng = computeEngineState();
+  const scheduledCount = eng.assignments.length;
+  const unassignedChip = eng.unassigned.length > 0 ? ` · <span class="chip chip-exception">${eng.unassigned.length} unassigned</span>` : '';
+
+  sub.innerHTML = `<span class="mono-500">${scheduledCount}</span> of <span class="mono-500">${eng.studentCount}</span> students scheduled · <span class="mono-500">${eng.appointments.length}</span> appointments${unassignedChip}`;
+
+  const parts = [renderUtilisationTable(eng), renderUnassignedTable(eng), renderAppointmentsPreview(eng)];
+
+  container.innerHTML = parts.join('');
+  attachExportButtonHandler();
+}
+
+/**
+ * Recomputes and re-renders Review and Results together, regardless of
+ * which step is currently visible, so both stay in sync with uploads, mode,
+ * FTE values, start date, and the export mapping (SPEC.md §5, §6, §7).
+ */
+function refreshComputedSteps() {
+  renderReview();
   renderResults();
 }
 
@@ -538,11 +859,6 @@ function setupExportSettings() {
     renderResults();
   });
 
-  document.getElementById('export-btn').addEventListener('click', () => {
-    if (!state.results || state.results.appointments.length === 0) return;
-    exportAppointments(state.results.appointments, state.exportMapping);
-  });
-
   renderMappingEditor();
 }
 
@@ -579,9 +895,9 @@ function init() {
   document.getElementById('clear-uploads-btn').addEventListener('click', clearAllUploads);
 
   setupExportSettings();
-  refreshResults();
 
   renderStep();
+  refreshComputedSteps();
 }
 
 init();

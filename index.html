@@ -175,13 +175,7 @@
 
         <div class="ribbon-mount" data-ribbon="review"></div>
 
-        <div class="card">
-          <h2>Coach capacity</h2>
-          <p class="help-text">The FTE editor and capacity summary appear here once the scheduling engine is wired up.</p>
-          <div class="table-wrap">
-            <p class="table-empty">Upload the three files to see capacity.</p>
-          </div>
-        </div>
+        <div id="review-content"></div>
       </section>
 
       <!-- Step 4: Results -->
@@ -191,35 +185,7 @@
 
         <div class="ribbon-mount" data-ribbon="results"></div>
 
-        <p class="summary-line" id="results-summary" hidden></p>
-        <p class="table-empty" id="results-empty">Upload the class schedule, coach availability, and student list (and pairings, in pre-allocated mode) to see results.</p>
-
-        <div class="card" id="unassigned-card" hidden>
-          <h2>Unassigned students</h2>
-          <p class="help-text">Students without a scheduled meeting, and why.</p>
-          <div class="table-wrap">
-            <table>
-              <thead><tr><th>Student</th><th>Reason</th></tr></thead>
-              <tbody id="unassigned-tbody"></tbody>
-            </table>
-          </div>
-        </div>
-
-        <div class="card" id="appointments-card" hidden>
-          <div class="section-head">
-            <div>
-              <h2>Appointments</h2>
-              <p class="help-text" style="margin:0">Preview of the first 50 appointment rows, per the current export mapping below.</p>
-            </div>
-            <button type="button" id="export-btn" class="btn btn-primary">Export appointments</button>
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead><tr id="preview-thead-row"></tr></thead>
-              <tbody id="preview-tbody"></tbody>
-            </table>
-          </div>
-        </div>
+        <div id="results-content"></div>
 
         <div class="card" id="export-settings-card">
           <h2>
