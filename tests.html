@@ -89,6 +89,7 @@ import {
 } from './js/ics.js';
 import { buildZip, crc32, sanitiseZipEntryName, dedupeEntryNames } from './js/zip.js';
 import { isXLSXAvailable } from './js/xlsx-loader.js';
+import { escapeHtml } from './js/html.js';
 
 // ---- tiny assertion harness ----
 
@@ -2087,6 +2088,55 @@ test('the §7.1 appointments export is unaffected by the calendar export', () =>
   assertEqual(columns[0].header, 'Student Name', 'the default columns are unchanged');
   assertEqual(rows.length, 5, 'and still preview the appointments');
   assert(buildExportFilename(new Date(2026, 7, 12, 14, 30)).startsWith('appointments_'), 'as is its filename');
+});
+
+group('HTML escaping');
+
+// app.js builds most of its markup as strings and assigns it with innerHTML,
+// and the values interpolated into it — coach names, student names, contact
+// IDs — all come from an uploaded spreadsheet. escapeHtml is the only thing
+// standing between a hostile cell and script execution, so its contract is
+// asserted in both positions it is used in: element content and, crucially,
+// inside a quoted attribute value.
+
+test('escapeHtml neutralises the characters that end a text node', () => {
+  // The closing tag is written with an escaped slash so this literal cannot
+  // end the inline <script> this suite lives in.
+  assertEqual(escapeHtml('<script>alert(1)<\/script>'), '&lt;script&gt;alert(1)&lt;\/script&gt;', 'tags cannot open');
+  assertEqual(escapeHtml('Fish & Chips'), 'Fish &amp; Chips', 'ampersands are escaped once');
+  assertEqual(escapeHtml('a &amp; b'), 'a &amp;amp; b', 'and an already-escaped entity is not double-decoded');
+});
+
+test('escapeHtml neutralises the quotes that end an attribute value', () => {
+  assertEqual(escapeHtml('Ada"'), 'Ada&quot;', 'double quote');
+  assertEqual(escapeHtml("O'Hara"), 'O&#39;Hara', 'single quote');
+});
+
+test('a hostile coach name cannot add an attribute to the markup it lands in', () => {
+  // The exact shape of the §5.1 FTE input, the §11.2 coach picker and the §14
+  // bookings selectors: a spreadsheet value inside a quoted attribute.
+  const hostile = 'Ada" onfocus="window.__xssProbe = 1" autofocus x="';
+  const host = document.createElement('div');
+  host.innerHTML = `<input type="number" class="fte" data-coach="${escapeHtml(hostile)}" value="1.00" />`;
+  const input = host.querySelector('input');
+
+  assertEqual(
+    [...input.attributes].map((a) => a.name).sort().join(','),
+    'class,data-coach,type,value',
+    'no extra attributes were smuggled in'
+  );
+  assertEqual(input.dataset.coach, hostile, 'and the name still reads back exactly as it was uploaded');
+
+  const option = document.createElement('div');
+  option.innerHTML = `<select><option value="${escapeHtml(hostile)}">${escapeHtml(hostile)}</option></select>`;
+  assertEqual(option.querySelector('option').value, hostile, 'the same holds for an <option> value');
+  assertEqual(option.querySelectorAll('option').length, 1, 'and no second element was created');
+});
+
+test('escapeHtml prints nothing for a missing value', () => {
+  assertEqual(escapeHtml(undefined), '', 'an absent optional field leaves a blank cell');
+  assertEqual(escapeHtml(null), '', 'as does an empty one');
+  assertEqual(escapeHtml(0), '0', 'but a falsy value that is real is kept');
 });
 
 // ---- render ----

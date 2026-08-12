@@ -28,6 +28,7 @@ import {
   describeError,
 } from './errors.js';
 import { isXLSXAvailable, XLSX_MISSING_MESSAGE } from './xlsx-loader.js';
+import { escapeHtml } from './html.js';
 import { renderTermRibbon } from './ribbon.js';
 import { CAMPUSES, DEFAULT_CAMPUS_ID, campusOrDefault } from './timezone.js';
 import {
@@ -281,12 +282,6 @@ function getUploadElements(key) {
     replaceEl: dropzone.querySelector('.dropzone-replace'),
     resultEl: card.querySelector('.upload-result'),
   };
-}
-
-function escapeHtml(value) {
-  const div = document.createElement('div');
-  div.textContent = value;
-  return div.innerHTML;
 }
 
 /**
