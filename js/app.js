@@ -53,6 +53,7 @@ import {
   EXCLUDED_WEEKS,
   TERM_WEEKS,
   MAX_STUDENTS_PER_SLOT,
+  CLASS_BLOCK_TOTAL_HOURS,
   CLASS_BLOCK_TOTAL_MINUTES,
   REASONS,
 } from './scheduler.js';
@@ -1015,8 +1016,8 @@ function computeEngineState() {
  * The class blocks in the run (SPEC.md §6.3): what each cohort's timetable
  * totals, how many students are in it, and how many of the coaching slots it
  * can actually use once its own classes are taken out. The hours column is the
- * 15-hour rule made visible; the slots column is the answer to "why can this
- * student not be put at 10:00?".
+ * 13.5-hour expectation made visible; the slots column is the answer to "why
+ * can this student not be put at 10:00?".
  */
 function renderClassBlocksCard(eng) {
   const totalSlots = eng.slots.length;
@@ -1035,10 +1036,12 @@ function renderClassBlocksCard(eng) {
 
   const rows = eng.classBlockStats
     .map((block) => {
+      // Off the expected total is a warning, not a rejection (SPEC.md §3.1),
+      // so the chip is amber rather than red: the run still goes ahead.
       const exact = block.minutes === CLASS_BLOCK_TOTAL_MINUTES;
       const hoursChip = exact
-        ? '<span class="chip chip-ok">15 hours</span>'
-        : `<span class="chip chip-exception">${block.hours} hours</span>`;
+        ? `<span class="chip chip-ok">${CLASS_BLOCK_TOTAL_HOURS} hours</span>`
+        : `<span class="chip chip-warn">${block.hours} hours</span>`;
       return `
     <tr>
       <td>${escapeHtml(block.name || '(unnamed)')}</td>
@@ -1065,7 +1068,7 @@ function renderClassBlocksCard(eng) {
   return `
     <div class="card">
       <h2>Class blocks</h2>
-      <p class="help-text">${summaryBits.join(' · ')}. Every class block must total exactly 15 hours. A coaching slot is offered to a student only when it misses every class in their own block.</p>
+      <p class="help-text">${summaryBits.join(' · ')}. Every class block is expected to total ${CLASS_BLOCK_TOTAL_HOURS} hours; anything else is flagged but still scheduled. A coaching slot is offered to a student only when it misses every class in their own block.</p>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Class block</th><th class="num">Classes</th><th>Total hours</th><th class="num">Students</th><th class="num">Slots available</th></tr></thead>
