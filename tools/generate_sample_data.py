@@ -3,7 +3,7 @@
 
 The templates in templates/ stay empty — they are what the UI hands users to
 fill in. These samples are dummy data for exercising the app end to end:
-two 15-hour class blocks, 95 students, seven coaches.
+two 13.5-hour class blocks, 95 students, seven coaches.
 
 Each sample is the matching template with its sheet rows replaced, so the
 column headers, widths, styles and sheet name are identical to what a user
@@ -21,21 +21,21 @@ SAMPLES = ROOT / 'samples'
 
 # --- the data ---------------------------------------------------------------
 
-# Two cohorts, each totalling exactly 15 hours across the block (parse.js
+# Two cohorts, each totalling exactly 13.5 hours across the block (parse.js
 # checkClassBlockTotals), every class window between 1.5 and 3 hours.
 # Block A runs mornings, Block B afternoons, so coach windows blocked for one
 # cohort stay usable by the other.
 CLASSES = [
     ('Block A', 'Monday', '09:00', '12:00', 'Marketing Fundamentals'),      # 3.0
     ('Block A', 'Tuesday', '09:00', '11:30', 'Customer Research'),          # 2.5
-    ('Block A', 'Wednesday', '09:00', '12:00', 'Brand Strategy'),           # 3.0
+    ('Block A', 'Wednesday', '09:00', '10:30', 'Brand Strategy'),           # 1.5
     ('Block A', 'Thursday', '09:00', '10:30', 'Analytics Lab'),             # 1.5
     ('Block A', 'Thursday', '13:00', '15:00', 'Campaign Workshop'),         # 2.0
     ('Block A', 'Friday', '09:00', '12:00', 'Capstone Studio'),             # 3.0
     ('Block B', 'Monday', '13:00', '16:00', 'Product Foundations'),         # 3.0
     ('Block B', 'Tuesday', '13:00', '15:00', 'User Interviews'),            # 2.0
     ('Block B', 'Tuesday', '16:00', '18:30', 'Roadmapping'),                # 2.5
-    ('Block B', 'Wednesday', '13:00', '16:00', 'Discovery Sprint'),         # 3.0
+    ('Block B', 'Wednesday', '13:00', '14:30', 'Discovery Sprint'),         # 1.5
     ('Block B', 'Thursday', '13:00', '14:30', 'Metrics Clinic'),            # 1.5
     ('Block B', 'Friday', '13:00', '16:00', 'Capstone Studio'),             # 3.0
 ]

@@ -51,6 +51,7 @@ import {
   serviceNameFor,
   BLOCK_WEEKS,
   MEETING_STATUS,
+  CLASS_BLOCK_TOTAL_HOURS,
   CLASS_BLOCK_TOTAL_MINUTES,
   REASONS,
 } from './js/scheduler.js';
@@ -998,63 +999,95 @@ group('§3.1 — class block validation');
 const CLASS_HEADERS = ['Class Block', 'Day', 'Start Time', 'End Time', 'Class Name'];
 const STUDENT_HEADERS = ['Contact SF ID', 'Student Name', 'Student Email', 'Class Block'];
 
-/** Five 3-hour weekday classes for one block = exactly 15 hours. */
-const fifteenHourRows = (block, start = '09:00', end = '12:00') =>
-  ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'].map((day) => [block, day, start, end, 'Class']);
+/**
+ * Four 3-hour weekday classes plus a 1.5-hour one = exactly 13.5 hours, the
+ * expected total for a class block (SPEC.md §3.1).
+ */
+const expectedHourRows = (block, start = '09:00', end = '12:00') => {
+  const toMinutes = (hhmm) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3));
+  const toTime = (m) => `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+  const half = toTime(toMinutes(start) + (toMinutes(end) - toMinutes(start)) / 2); // Friday runs half-length
+  return ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'].map((day, i) => [
+    block,
+    day,
+    start,
+    i === 4 ? half : end,
+    'Class',
+  ]);
+};
 
 const parseClasses = (rows) => parseClassScheduleSheet('classes.xlsx', [CLASS_HEADERS, ...rows]);
 const parseStudents = (rows) => parseStudentListSheet('students.xlsx', [STUDENT_HEADERS, ...rows]);
 const messages = (issues) => issues.map((issue) => issue.message).join('\n');
 
-test('a class block totalling exactly 15 hours is accepted', () => {
-  const result = parseClasses(fifteenHourRows('Block A'));
+test('the expected class-block total is 13.5 hours', () => {
+  assertEqual(CLASS_BLOCK_TOTAL_HOURS, 13.5);
+  assertEqual(CLASS_BLOCK_TOTAL_MINUTES, 810);
+});
+
+test('a class block totalling exactly 13.5 hours is accepted without a warning', () => {
+  const result = parseClasses(expectedHourRows('Block A'));
   assertDeep(result.errors, [], messages(result.errors));
+  assertDeep(result.warnings, [], messages(result.warnings));
   assertEqual(result.rows.length, 5);
   const blocks = buildClassBlocks(result.rows);
   assertEqual(blocks.length, 1);
   assertEqual(blocks[0].minutes, CLASS_BLOCK_TOTAL_MINUTES);
-  assertEqual(blocks[0].hours, 15);
+  assertEqual(blocks[0].hours, 13.5);
 });
 
-test('several class blocks can coexist in one run, each with its own 15 hours', () => {
-  const result = parseClasses([...fifteenHourRows('Block A'), ...fifteenHourRows('Block B', '13:00', '16:00')]);
+test('several class blocks can coexist in one run, each with its own 13.5 hours', () => {
+  const result = parseClasses([...expectedHourRows('Block A'), ...expectedHourRows('Block B', '13:00', '16:00')]);
   assertDeep(result.errors, [], messages(result.errors));
+  assertDeep(result.warnings, [], messages(result.warnings));
   const blocks = buildClassBlocks(result.rows);
-  assertDeep(blocks.map((b) => `${b.name}=${b.hours}`), ['Block A=15', 'Block B=15']);
+  assertDeep(blocks.map((b) => `${b.name}=${b.hours}`), ['Block A=13.5', 'Block B=13.5']);
 });
 
-test('a class block totalling less than 15 hours is rejected, naming the block and its total', () => {
-  const rows = fifteenHourRows('Block A').slice(0, 4); // 12 hours
+test('a class block totalling less than 13.5 hours is a warning, naming the block and its total', () => {
+  const rows = expectedHourRows('Block A').slice(0, 4); // 12 hours
   const result = parseClasses(rows);
-  assertEqual(result.errors.length, 1, messages(result.errors));
-  assert(result.errors[0].message.includes('"Block A"'), 'the message names the block');
-  assert(result.errors[0].message.includes('12 hours'), `the message states the total: ${result.errors[0].message}`);
-  assert(result.errors[0].message.includes('3 hours short of'), result.errors[0].message);
+  assertDeep(result.errors, [], 'a short block is flagged, not rejected');
+  assertEqual(result.warnings.length, 1, messages(result.warnings));
+  assert(result.warnings[0].message.includes('"Block A"'), 'the message names the block');
+  assert(result.warnings[0].message.includes('12 hours'), `the message states the total: ${result.warnings[0].message}`);
+  assert(result.warnings[0].message.includes('1.5 hours short of the expected 13.5 hours'), result.warnings[0].message);
 });
 
-test('a class block totalling more than 15 hours is rejected the same way', () => {
-  const rows = [...fifteenHourRows('Block A'), ['Block A', 'Saturday', '09:00', '11:30', 'Extra']]; // 17.5 hours
+test('a class block totalling more than 13.5 hours is warned about the same way', () => {
+  const rows = [...expectedHourRows('Block A'), ['Block A', 'Saturday', '09:00', '11:30', 'Extra']]; // 16 hours
   const result = parseClasses(rows);
-  assertEqual(result.errors.length, 1, messages(result.errors));
-  assert(result.errors[0].message.includes('17.5 hours'), result.errors[0].message);
-  assert(result.errors[0].message.includes('2.5 hours over'), result.errors[0].message);
+  assertDeep(result.errors, [], 'a long block is flagged, not rejected');
+  assertEqual(result.warnings.length, 1, messages(result.warnings));
+  assert(result.warnings[0].message.includes('16 hours'), result.warnings[0].message);
+  assert(result.warnings[0].message.includes('2.5 hours over the expected 13.5 hours'), result.warnings[0].message);
 });
 
-test('one bad block is reported without condemning the good one', () => {
-  const result = parseClasses([...fifteenHourRows('Block A'), ...fifteenHourRows('Block B').slice(0, 3)]);
-  assertEqual(result.errors.length, 1);
-  assert(result.errors[0].message.includes('"Block B"'), result.errors[0].message);
+test('a class block off the expected total still yields usable, schedulable rows', () => {
+  const rows = expectedHourRows('Block A').slice(0, 4); // 12 hours
+  const result = parseClasses(rows);
+  assertEqual(result.rows.length, 4, 'every class row survives the warning');
+  const blocks = buildClassBlocks(result.rows);
+  assertEqual(blocks[0].hours, 12);
+  assertEqual(blocks[0].classes.length, 4);
+});
+
+test('one off-total block is flagged without condemning the good one', () => {
+  const result = parseClasses([...expectedHourRows('Block A'), ...expectedHourRows('Block B').slice(0, 3)]);
+  assertDeep(result.errors, [], messages(result.errors));
+  assertEqual(result.warnings.length, 1);
+  assert(result.warnings[0].message.includes('"Block B"'), result.warnings[0].message);
 });
 
 test('a class row with no class block name is a row error', () => {
-  const rows = fifteenHourRows('Block A');
+  const rows = expectedHourRows('Block A');
   rows[2][0] = '';
   const result = parseClasses(rows);
   assert(result.errors.some((e) => e.row === 4 && e.message.includes('Missing Class Block')), messages(result.errors));
 });
 
 test('a class row naming two blocks at once is rejected', () => {
-  const rows = fifteenHourRows('Block A');
+  const rows = expectedHourRows('Block A');
   rows[0][0] = 'Block A, Block B';
   const result = parseClasses(rows);
   assert(result.errors.some((e) => e.message.includes('names more than one class block')), messages(result.errors));
@@ -1076,7 +1109,7 @@ test('two overlapping classes in the same block are an error; the same hour in a
   ]);
   assert(clash.errors.some((e) => e.message.includes('overlapping classes on Monday')), messages(clash.errors));
 
-  const parallel = parseClasses([...fifteenHourRows('Block A'), ...fifteenHourRows('Block B')]);
+  const parallel = parseClasses([...expectedHourRows('Block A'), ...expectedHourRows('Block B')]);
   assertDeep(parallel.errors, [], 'the same hours in two different blocks are normal');
 });
 
@@ -1111,7 +1144,7 @@ test('a student cannot belong to two class blocks at once', () => {
 });
 
 test('a student naming an unknown class block is warned about, listing the real blocks', () => {
-  const blocks = buildClassBlocks(parseClasses([...fifteenHourRows('Block A'), ...fifteenHourRows('Block B')]).rows);
+  const blocks = buildClassBlocks(parseClasses([...expectedHourRows('Block A'), ...expectedHourRows('Block B')]).rows);
   const rows = parseStudents([
     ['S1', 'Jane Doe', 'jane@example.com', 'Block A'],
     ['S2', 'Sam Patel', 'sam@example.com', 'Block Z'],

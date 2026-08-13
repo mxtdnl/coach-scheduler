@@ -1,6 +1,6 @@
 # Coaching Meeting Scheduler — Technical Specification
 
-Version 1.6 — 13 August 2026 (§7.4 the coach calendar export is now a **single `.ics` file per coach**, holding one `VEVENT` per meeting, replacing the v1.5 ZIP of one file per meeting; v1.5 added §14/§15 the Results booking views — by coach and by student — and the coach calendar export itself; §7.3/§13 the auto-assign coach-assignments batch upload from v1.4; §3.1/§4.4a/§5.3 multiple class blocks from v1.3; §6.1 Campus and §7.1 export columns from v1.2; §11 Blocked weeks/dates from v1.1)
+Version 1.7 — 13 August 2026 (§3.1 the class-block total is now **13.5 hours**, and a block that comes to anything else is a **warning** rather than a rejection — the file uploads and schedules; v1.6 made §7.4 the coach calendar export a **single `.ics` file per coach**, holding one `VEVENT` per meeting, replacing the v1.5 ZIP of one file per meeting; v1.5 added §14/§15 the Results booking views — by coach and by student — and the coach calendar export itself; §7.3/§13 the auto-assign coach-assignments batch upload from v1.4; §3.1/§4.4a/§5.3 multiple class blocks from v1.3; §6.1 Campus and §7.1 export columns from v1.2; §11 Blocked weeks/dates from v1.1)
 
 ## 1. Purpose
 
@@ -55,7 +55,7 @@ Terminology: a **class block** is a cohort's class timetable. It is unrelated to
 | End Time | Yes | Must be after Start Time |
 | Class Name | No | Label only |
 
-**The 15-hour rule (normative).** Each class block must total **exactly 15 hours** of class — the sum of every class row in that block across the whole timetable, *not* 15 hours per week. A block totalling anything else is a validation error naming the block and the total it actually came to (§8). Two classes of the same block may not overlap each other (they would count the same hour twice); the same clock hour in two *different* blocks is normal and expected.
+**The 13.5-hour rule (normative).** Each class block is expected to total **13.5 hours** of class — the sum of every class row in that block across the whole timetable, *not* 13.5 hours per week. A block totalling anything else is a **warning**, not an error: it names the block and the total it actually came to (§8), the file is still accepted, and the run schedules from it unchanged. Only the user can say whether an unusual total is a mistake in the timetable or the timetable itself, so the tool flags it and defers. Two classes of the same block may not overlap each other (they would count the same hour twice, making the total meaningless) — that stays a hard error.
 
 A file whose rows carry no Class Block value is not accepted (the column is required). The engine itself still treats an unnamed set of class rows as one implicit block, which is what makes its own fixtures and any legacy caller behave exactly as the pre-v1.3 single timetable did.
 
@@ -151,7 +151,7 @@ This is what makes every class timetable safe to compare against every coach's a
 
 ### 6.3 Class blocks on Review
 
-A card above the capacity table, one row per class block: block name, number of classes, **total hours** (an `--ok-tint` chip at exactly 15 hours, an `--err-tint` chip otherwise), number of students in the block, and how many of the run's coaching slots that block can use ("90 of 150"). The last column is the on-screen answer to "why is this hour not on offer to this student?". The card's summary line names how many students reference a block that is not in the class schedule.
+A card above the capacity table, one row per class block: block name, number of classes, **total hours** (an `--ok-tint` chip at exactly 13.5 hours, a `--warn-tint` chip otherwise — the run is not blocked by it), number of students in the block, and how many of the run's coaching slots that block can use ("90 of 150"). The last column is the on-screen answer to "why is this hour not on offer to this student?". The card's summary line names how many students reference a block that is not in the class schedule.
 
 ### 6.4 Class blocks on Results
 
@@ -394,7 +394,7 @@ writer at all (the v1.5 `zip.js` is therefore gone).
 - Empty file (headers only) → rejected.
 - Missing Class Block value (class schedule or student list) → row error naming the column.
 - A Class Block cell naming more than one block (a comma, semicolon, slash, pipe, `&`, `+` or "and") → row error quoting the value.
-- A class block not totalling exactly 15 hours → error naming the block, its class count, its actual total, and how far off it is.
+- A class block not totalling exactly 13.5 hours → **warning** naming the block, its class count, its actual total, and how far off it is. The file is accepted and the rows are scheduled from.
 - Two classes of the same block overlapping → error naming the block, the day, both time ranges and both row numbers.
 - A student naming a class block the class schedule does not define → warning listing the known blocks; becomes `class block not found` at scheduling (§5.3).
 
@@ -402,7 +402,7 @@ writer at all (the v1.5 `zip.js` is therefore gone).
 
 Pure functions, no DOM, so `tests.html` can exercise them:
 
-- `buildClassBlocks(classRows)` → `[{id, name, minutes, hours, classes, rowNumbers}]` in first-appearance order (`id` = trimmed, case-folded name)
+- `buildClassBlocks(classRows)` → `[{id, name, minutes, hours, classes, rowNumbers}]` in first-appearance order (`id` = trimmed, case-folded name); `CLASS_BLOCK_TOTAL_HOURS` (13.5) / `CLASS_BLOCK_TOTAL_MINUTES` (810) are the expected block total
 - `classBlockKey(name)` → the matching key for a class-block name
 - `buildSlots(availability, classRowsOrBlocks)` → `[{coach, day, start, end, blockedFor}]`, where `blockedFor` lists the class-block ids the slot clashes with (§4.4a)
 - `slotAllowsClassBlock(slot, classBlock)` / `slotsForClassBlock(slots, classBlock)` → the student-specific validity test
@@ -484,10 +484,11 @@ tests.html must additionally assert: no appointment lands on a blocked coach-wee
 
 tests.html must exercise the real engine and the real parser rules, and assert at least:
 
-1. One class block totalling exactly 15 hours is accepted.
-2. Several class blocks coexist in one run, each with its own 15 hours.
-3. A block totalling less than 15 hours is rejected, with the block name and its actual total in the message.
-4. A block totalling more than 15 hours is rejected the same way.
+1. One class block totalling exactly 13.5 hours is accepted with no warning.
+2. Several class blocks coexist in one run, each with its own 13.5 hours.
+3. A block totalling less than 13.5 hours is warned about — not rejected — with the block name and its actual total in the message.
+4. A block totalling more than 13.5 hours is warned about the same way.
+4a. A block off the expected total still parses into usable rows and schedules.
 5. A student in block A can be scheduled in an hour that overlaps a block B class, provided it misses every block A class.
 6. No student is ever scheduled during a class in their own block — at assignment and after the §11.3 blocking post-pass.
 7. Coach availability constraints still hold (windows inside availability, on `:00`/`:30`, 60 minutes).

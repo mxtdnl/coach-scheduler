@@ -138,24 +138,30 @@ Every class timetable in the run goes in this one file, one row per class. The
 | End Time | Yes | When it ends. Must be later than the start. |
 | Class Name | No | A label for your own benefit, e.g. `Marketing Fundamentals`. Not used in the schedule. |
 
-#### Class blocks and the 15-hour rule
+#### Class blocks and the 13.5-hour rule
 
 A **class block** is one group of students' complete class timetable. You can
 have as many as you like in a run — one per cohort — and they can teach the
 same hours as each other without any trouble.
 
-**Every class block must add up to exactly 15 hours.** That is 15 hours for the
-timetable as a whole, not 15 hours a week. Five 3-hour classes make a block;
-so do ten 90-minute ones. If a block comes to anything else the file is
-rejected with a message naming the block and the total it actually came to,
-for example:
+**Every class block is expected to add up to 13.5 hours.** That is 13.5 hours
+for the timetable as a whole, not 13.5 hours a week. Four 3-hour classes and a
+90-minute one make a block; so do nine 90-minute ones. If a block comes to
+anything else you get a **warning** naming the block and the total it actually
+came to — the file is still accepted and the schedule is still built from it:
 
-> Class block "Block A" totals 12 hours across 4 classes — 3 hours short of
-> the required 15 hours. Adjust the class times for this block.
+> Class block "Block A" totals 12 hours across 4 classes — 1.5 hours short of
+> the expected 13.5 hours. The file has been accepted; check the class times
+> for this block if that is not intended.
+
+So an unusual total is yours to judge: fix the timetable if it is a typo, or
+carry on if the cohort really is taught that much. The warning appears on the
+upload card and again in the Warnings panel on Review.
 
 Two classes in the *same* block may not overlap each other — that would count
-the same hour twice and make the 15-hour total meaningless. Two classes in
-*different* blocks may sit on the same hour; that is the normal case.
+the same hour twice and make the total meaningless. That one *is* rejected.
+Two classes in *different* blocks may sit on the same hour; that is the normal
+case.
 
 The Review step shows every block, its hours, how many students are in it, and
 how many coaching slots it can use, so you can check all of this at a glance
@@ -247,8 +253,8 @@ In **pre-allocated** mode you get a coverage table instead: how many students
 have been paired to each coach, and whether that fits.
 
 Above either table sits **Class blocks**: one row per class block, with its
-number of classes, its total hours (a green chip when it is exactly 15, a red
-one when it is not), how many students are in it, and how many of the run's
+number of classes, its total hours (a green chip when it is exactly 13.5, an
+amber one when it is not — amber because it does not stop the run), how many students are in it, and how many of the run's
 coaching slots that block can actually use. That last figure is the answer to
 "why is this hour not available to this student?" — a slot the block's own
 classes cover is not on offer to its students, but stays on offer to everybody
@@ -662,17 +668,17 @@ data — the numbers match what Excel shows you down the left-hand side.
 | **Duplicate Contact SF ID "0031t…" appears in rows 5, 9.** | The same student appears more than once in the student list. | Delete the extra rows. All copies are ignored until you do, so the student will not be scheduled. |
 | **Missing Class Block value.** | A class row or a student row has no class block on it. | Fill it in. Every class belongs to a block, and every student belongs to exactly one — the tool never guesses. |
 | **"Block A, Block B" names more than one class block.** | One cell holds two block names. | Put a single block name in the cell. A student belongs to exactly one class block, and a class row belongs to exactly one too. |
-| **Class block "Block A" totals 12 hours across 4 classes — 3 hours short of the required 15 hours.** | The class rows for that block do not add up to 15 hours in total (not per week). | Add, remove or lengthen classes in that block until it comes to exactly 15 hours. Other blocks are unaffected. |
-| **Class block "Block A" has two overlapping classes on Monday: 09:00–12:00 (row 3) and 11:00–13:00 (row 4).** | Two classes in the same block clash, which would count the same hour twice in its 15-hour total. | Correct one of the two rows. Classes in *different* blocks may overlap freely. |
+| **Class block "Block A" has two overlapping classes on Monday: 09:00–12:00 (row 3) and 11:00–13:00 (row 4).** | Two classes in the same block clash, which would count the same hour twice in its hours total. | Correct one of the two rows. Classes in *different* blocks may overlap freely. |
 | **The workbook has no sheets.** / **Sheet "…" could not be read.** | The file opened but there is nothing inside it. | Re-save it from Excel with your data on the first sheet. The tool always reads the first sheet. |
 
-### Warnings about pairings
+### Warnings
 
-These appear in amber and do not stop anything — but they usually mean a
-student will go unscheduled, so they are worth reading.
+These appear in amber and do not stop anything — the file still uploads and
+the schedule is still built — but they are worth reading.
 
 | Message | What it means | What to do |
 |---|---|---|
+| **Class block "Block A" totals 12 hours across 4 classes — 1.5 hours short of the expected 13.5 hours.** | The class rows for that block do not add up to the expected 13.5 hours in total (not per week). | Nothing, if the cohort really is taught that much — the block schedules either way. Otherwise add, remove or lengthen classes in that block. Other blocks are unaffected. |
 | **Contact SF ID "…" does not appear in the student list.** | The pairings file mentions somebody who is not in the student list. | Either add them to the student list, or remove the pairing row. Until then that row does nothing. |
 | **Coach Name "…" does not appear in the coach availability file.** | The pairings file names a coach who has no availability. | Check the spelling matches the availability file exactly, or add availability rows for that coach. Their students end up as *coach not found*. |
 | **Class block "Block Z" is not in the class schedule, so this student cannot be scheduled. Known class blocks: Block A, Block B.** | A student names a class block the class schedule does not define. | Fix the spelling in the student list, or add that block's classes to the class schedule. Until then the student is left unscheduled as *class block not found*. |

@@ -14,6 +14,7 @@ import {
   classBlockKey,
   minutesToHours,
   minutesToTime,
+  CLASS_BLOCK_TOTAL_HOURS,
   CLASS_BLOCK_TOTAL_MINUTES,
 } from './scheduler.js';
 
@@ -266,24 +267,26 @@ function requiredClassBlock(raw, headerIndex, columnName, rowNumber, fileName, e
 }
 
 /**
- * SPEC.md §3.1 — each class block is one cohort's complete timetable and must
- * total exactly 15 hours of class. The total is the sum of every class row in
- * the block, so a block that is short or long is named here with the total it
- * actually came to.
+ * SPEC.md §3.1 — each class block is one cohort's complete timetable and is
+ * expected to total 13.5 hours of class. The total is the sum of every class
+ * row in the block, so a block that is short or long is named here with the
+ * total it actually came to. This is a warning, not an error: the file is
+ * still accepted and schedulable, because a cohort's real timetable may
+ * legitimately differ and only the user can say whether it is a mistake.
  */
-function checkClassBlockTotals(fileName, rows, errors) {
+function checkClassBlockTotals(fileName, rows, warnings) {
   buildClassBlocks(rows).forEach((block) => {
     if (block.minutes === CLASS_BLOCK_TOTAL_MINUTES) return;
     const firstRow = block.rowNumbers[0] ?? null;
     const direction = block.minutes < CLASS_BLOCK_TOTAL_MINUTES ? 'short of' : 'over';
     const difference = minutesToHours(Math.abs(block.minutes - CLASS_BLOCK_TOTAL_MINUTES));
     addIssue(
-      errors,
+      warnings,
       fileName,
       firstRow,
       `Class block "${block.name}" totals ${minutesToHours(block.minutes)} hours across ${block.classes.length} class${
         block.classes.length === 1 ? '' : 'es'
-      } — ${difference} hour${difference === 1 ? '' : 's'} ${direction} the required 15 hours. Adjust the class times for this block.`
+      } — ${difference} hour${difference === 1 ? '' : 's'} ${direction} the expected ${CLASS_BLOCK_TOTAL_HOURS} hours. The file has been accepted; check the class times for this block if that is not intended.`
     );
   });
 }
@@ -291,7 +294,7 @@ function checkClassBlockTotals(fileName, rows, errors) {
 /**
  * Two classes of the same block overlapping would make its hour total
  * meaningless (the same hour counted twice), so they are a named error rather
- * than a silent inflation of the 15-hour check. The same clock hour in two
+ * than a silent inflation of the hours check. The same clock hour in two
  * *different* blocks is normal and untouched.
  */
 function checkClassOverlaps(fileName, rows, errors) {
@@ -330,7 +333,7 @@ function parseClassScheduleRow(raw, rowNumber, headerIndex, fileName, errors) {
 function finishClassSchedule(fileName, result) {
   if (result.rows.length > 0) {
     checkClassOverlaps(fileName, result.rows, result.errors);
-    checkClassBlockTotals(fileName, result.rows, result.errors);
+    checkClassBlockTotals(fileName, result.rows, result.warnings);
   }
   return result;
 }

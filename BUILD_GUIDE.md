@@ -178,6 +178,17 @@ Run after Session 10. Replace `SPEC.md` with the v1.6 version before starting.
 
 **Verify:** pick a coach with meetings, download the file, and confirm it is a single `.ics` whose event count equals that coach's meeting count, in date order, with no other coach's meetings in it; import it into Outlook and confirm every meeting appears at the right campus-local time either side of the clock change; import it a second time and confirm entries are updated rather than duplicated; confirm a coach with no meetings cannot export; tests.html all green.
 
+
+### Session 12 — Class-block hours: 13.5, and a warning not a rejection (v1.7)
+
+Run after Session 11. Replace `SPEC.md` with the v1.7 version before starting.
+
+**Prompt:**
+
+> Read SPEC.md §3.1, §6.3, §8, §9 and §12. Change the expected class-block total from 15 hours to **13.5 hours**, and downgrade the check from a rejection to a flag: a block totalling anything else now produces a *warning* naming the block, its class count, its actual total and how far off it is, while the file is still accepted and scheduled from. In `js/scheduler.js` export `CLASS_BLOCK_TOTAL_HOURS` (13.5) alongside `CLASS_BLOCK_TOTAL_MINUTES` and derive one from the other, so no hour figure is written twice. In `js/parse.js` have `checkClassBlockTotals` push to the result's `warnings` rather than its `errors`, and word the message so the user knows the upload succeeded. Leave the same-block overlap check a hard error — overlapping classes make the total meaningless. In `js/app.js` render the Review class-blocks chip green at exactly 13.5 hours and **amber** (`chip-warn`, not `chip-exception`) otherwise, since it no longer blocks the run. Update the copy in index.html. Regenerate the sample workbooks from `tools/generate_sample_data.py` so both cohorts total 13.5 hours. Update the §12 tests to assert the warning path — including that an off-total block still parses into usable, schedulable rows — and keep the existing tests green. Update SPEC.md, README.md, BUILD_GUIDE.md and samples/README.md. Commit and push.
+
+**Verify:** upload a class schedule whose blocks total 13.5 hours and confirm no warning and a green chip; change one class so a block comes to 12 hours and confirm the upload still succeeds, the warning names the block and says 1.5 hours short, the Review chip is amber, the warning also appears in the Review Warnings panel, and the run still schedules those students; confirm two overlapping classes in one block are still rejected; tests.html all green.
+
 ---
 
 ## Part D — Ongoing use and future changes
