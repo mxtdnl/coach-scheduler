@@ -1633,7 +1633,7 @@ function weekChip(week) {
   return `<span class="chip chip-wk-b${block}">Week ${escapeHtml(String(week))}</span>`;
 }
 
-/** The ICS/ZIP options for the current run: the campus is the meeting's location. */
+/** The ICS options for the current run: the campus is the meeting's location. */
 function calendarOptions() {
   const campus = campusOrDefault(state.campusId);
   return { campusLabel: campus.label, timeZone: campus.timeZone };
@@ -1815,22 +1815,22 @@ function refreshBookingsPanel() {
 /**
  * The coach calendar button (SPEC.md §7.4). It names the selected coach, and
  * is only enabled when that coach actually has meetings to export — an empty
- * archive is not a useful download, so the panel says so instead.
+ * calendar is not a useful download, so the panel says so instead.
  */
 function updateCoachCalendarButton(eng) {
   const btn = document.getElementById('export-calendar-btn');
   if (!btn) return;
   const coach = state.bookings.coach;
-  // Counted, not serialised: the button's state must not cost a calendar file
-  // per meeting on every re-render.
+  // Counted, not serialised: the button's state must not cost a whole calendar
+  // on every re-render.
   const exportable = coach ? exportableCoachMeetings(eng.appointments, coach) : [];
   btn.disabled = exportable.length === 0;
-  btn.textContent = 'Export coach calendar (.zip)';
+  btn.textContent = 'Export coach calendar (.ics)';
   btn.setAttribute(
     'aria-label',
     coach
-      ? `Download a ZIP of calendar files, one .ics per meeting, for ${coach}`
-      : 'Download a ZIP of calendar files for the selected coach — choose a coach first'
+      ? `Download one calendar file holding every meeting for ${coach}`
+      : 'Download one calendar file for the selected coach — choose a coach first'
   );
   const note = document.getElementById('bookings-export-note');
   if (note) {
@@ -1842,9 +1842,9 @@ function updateCoachCalendarButton(eng) {
     } else if (exportable.length === 0) {
       note.textContent = `${coach} has no meetings to export.`;
     } else {
-      note.textContent = `${exportable.length} calendar file${
+      note.textContent = `One .ics file holding all ${exportable.length} meeting${
         exportable.length === 1 ? '' : 's'
-      }, one per meeting, in a single .zip.`;
+      } — open or import it once and they all appear in your calendar.`;
     }
   }
 }
@@ -1937,7 +1937,7 @@ function renderBookingsSection(eng) {
                </select>
              </label>
              <div class="bookings-export">
-               <button type="button" id="export-calendar-btn" class="btn btn-secondary" disabled>Export coach calendar (.zip)</button>
+               <button type="button" id="export-calendar-btn" class="btn btn-secondary" disabled>Export coach calendar (.ics)</button>
                <p class="help-text" id="bookings-export-note"></p>
              </div>`
       }
@@ -2007,7 +2007,7 @@ function renderBookingsSection(eng) {
   if (exportBtn) exportBtn.addEventListener('click', guarded('creating the coach calendar', handleCoachCalendarExport));
 }
 
-/** SPEC.md §7.4 — one .ics per meeting for the selected coach, in one .zip. */
+/** SPEC.md §7.4 — one .ics holding every meeting for the selected coach. */
 function handleCoachCalendarExport() {
   if (!hasResultsInputs()) {
     showError('There is nothing to export yet.', blockedExplanation(), 'export-calendar');
@@ -2018,7 +2018,7 @@ function handleCoachCalendarExport() {
     showError('Choose a coach before exporting a calendar.', null, 'export-calendar');
     return;
   }
-  // Rebuilt at click time, so the archive always reflects the current schedule.
+  // Rebuilt at click time, so the calendar always reflects the current schedule.
   const eng = guard('rebuilding the schedule for the calendar export', computeEngineState);
   if (!eng) return;
   if (exportableCoachMeetings(eng.appointments, coach).length === 0) {
