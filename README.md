@@ -110,6 +110,15 @@ is still a perfectly good coaching hour for a Block B student, and vice versa.
 to three students, one on each of the three patterns. That is what makes a
 coach's capacity `number of usable hours × 3`.
 
+**A coach's students are spread across their days.** If a coach is available on
+four days and takes ten students, the tool gives them roughly two or three
+students on each day — 3, 3, 2, 2 — rather than filling Monday and Tuesday and
+leaving Wednesday and Thursday empty. The spread is per coach, over the days
+that coach actually has usable hours on, and it never breaks one of the rules
+above to achieve it: if a day is full, or every hour left on it is during a
+student's own class, that student goes to whichever of the coach's other days
+is furthest behind. A coach available on one day only is unaffected.
+
 **Same inputs, same output.** Run the tool twice with the same files and you
 get exactly the same schedule. Nothing is random.
 
@@ -615,6 +624,11 @@ always stay with the same coach and inside the same block of the term (weeks
    week first, then the coach's hours in their usual order.
 3. If the block is genuinely full, that one meeting becomes an **exception**.
    The student's other three meetings are untouched.
+
+Rebooking follows this order and nothing else — in particular it does not
+re-spread the coach's days, so a coach's week can look a little lopsided after
+a block. Keeping the meeting with its own coach, inside its own block of the
+term, matters more than the spread.
 
 Moved meetings show the week they came from in the **Rescheduled From Week**
 export column, which is blank for every meeting that stayed put. Exceptions are

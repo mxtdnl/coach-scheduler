@@ -1,6 +1,6 @@
 # Coaching Meeting Scheduler — Technical Specification
 
-Version 1.7 — 13 August 2026 (§3.1 the class-block total is now **13.5 hours**, and a block that comes to anything else is a **warning** rather than a rejection — the file uploads and schedules; v1.6 made §7.4 the coach calendar export a **single `.ics` file per coach**, holding one `VEVENT` per meeting, replacing the v1.5 ZIP of one file per meeting; v1.5 added §14/§15 the Results booking views — by coach and by student — and the coach calendar export itself; §7.3/§13 the auto-assign coach-assignments batch upload from v1.4; §3.1/§4.4a/§5.3 multiple class blocks from v1.3; §6.1 Campus and §7.1 export columns from v1.2; §11 Blocked weeks/dates from v1.1)
+Version 1.8 — 13 August 2026 (§4.7 a coach's meetings are now **spread as evenly as possible across the days that coach has valid slots on**, instead of piling onto their earliest days; §4.6, §5.1 and §5.2 restate the assignment order accordingly and §11.3 states explicitly that it does not re-balance days; v1.7 made §3.1 the class-block total **13.5 hours** with anything else a **warning** rather than a rejection — the file uploads and schedules; v1.6 made §7.4 the coach calendar export a **single `.ics` file per coach**, holding one `VEVENT` per meeting, replacing the v1.5 ZIP of one file per meeting; v1.5 added §14/§15 the Results booking views — by coach and by student — and the coach calendar export itself; §7.3/§13 the auto-assign coach-assignments batch upload from v1.4; §3.1/§4.4a/§5.3 multiple class blocks from v1.3; §6.1 Campus and §7.1 export columns from v1.2; §11 Blocked weeks/dates from v1.1)
 
 ## 1. Purpose
 
@@ -101,7 +101,19 @@ One row per weekly availability block per coach.
 4. **Valid slot definition:** a 60-minute window that (a) lies entirely within one of the coach's availability blocks, (b) starts on a 30-minute boundary (`:00` or `:30`), and (c) can be used by at least one class block — i.e. it is not covered by a class in *every* class block of the run. A window every cohort is in class for is dead and is not built at all.
 4a. **Class clashes are student-specific (normative).** A slot is not globally invalid because it overlaps a class. It is invalid **for a particular student** when it overlaps a class in that student's assigned class block; a class belonging to another block is irrelevant to them. Each slot therefore records which class blocks it clashes with, and the check is applied per student at assignment time — and again in the §11.3 blocking post-pass, so a rebooked meeting never lands on the student's own class.
 5. **Slot capacity:** each (coach, slot) pair can host at most 3 students — one per offset. A coach's capacity is (valid slots per §4.4) × 3, so one cohort's classes never reduce a coach's capacity for the other cohorts.
-6. **Determinism:** given identical inputs, output is identical. Slots are ordered by day (Mon→Sun) then start time; students are processed in file order; offsets fill 1→2→3 within a slot before moving to the next slot.
+6. **Determinism:** given identical inputs, output is identical. `buildSlots` returns slots ordered by day (Mon→Sun) then start time; students are processed in file order; **within a day** a coach's slots are taken in start-time order and each slot's offsets fill 1→2→3 before the next slot. Which of a coach's *days* a student's place comes from is decided by §4.7, whose tie-break is total, so the whole assignment order remains a function of the inputs alone.
+7. **Day-balanced allocation (normative).** A coach's meetings are spread as evenly as the hard constraints allow across the distinct days on which that coach has at least one valid slot (§4.4), rather than filling their earliest days first.
+   - **Scope.** Balance is measured **per coach**, over that coach's own days. It says nothing about how students are shared *between* coaches: that stays the §5.1 quota (auto-assign) or the §5.2 pairings file (pre-allocated).
+   - **Per-day target.** The coach's quota (§5.1) — or, in pre-allocated mode, the number of students paired to them (§5.2) — is distributed across those days by the **largest-remainder** method with equal weight per day, **capped by each day's capacity** (slots that day × 3, §4.5). A remainder left over by capping is redistributed to the days that still have spare capacity, repeating until every place is targeted or all capacity is used. Ties on the fractional remainder go to the earlier day (Mon→Sun).
+   - **Within a day nothing changes.** The day's slots are taken in start-time order and offsets fill 1→2→3 within a slot before the next slot — §4.6's order, untouched.
+   - **Worked example.** A coach with 2 valid slots on each of Monday, Tuesday, Wednesday and Thursday has a capacity of 6 meetings per day (§4.5: 3 students per slot, one per offset). Given a quota of 10, the engine schedules **3/3/2/2** across the four days — **not** 6/4/0/0, which is what consuming the slot list in flat §4.6 order produced before v1.8.
+   - **Balancing never overrides a hard constraint.** It reorders which place is *offered*, and nothing more: §4.4a class-block clashes, §4.5 slot capacity, §5.1 quotas and §5.2 pairings order all still bind. A student who cannot take a place on their target day (their own class covers what is left there, or the day is full) **falls to the day with the largest current deficit** — target minus meetings already placed there. If no day of that coach can take them, the §5.1/§5.2 unassigned reasons apply **unchanged**.
+   - **Tie-break (determinism, §4.6).** For each student, that coach's days are ranked by **largest deficit → fewest meetings placed so far → earliest day (Mon→Sun)**; within the chosen day, **earliest start time → offset 1→2→3**. Days whose target is already met stay in the ranking, last: that is how a day which cannot take its share gives its places back to the rest of the week.
+   - **Both modes.** The rule applies to §5.1 auto-assign and §5.2 pre-allocated alike.
+   - **A single-day coach is unaffected.** With one day there is nothing to balance, and the order is exactly §4.6's.
+   - **§11.3 keeps its own rule.** The blocked-week/date post-pass redistributes within the **same coach and the same term block**, in the order §11.3 states, and does **not** re-balance days. A coach's day balance may therefore shift once weeks or dates are blocked, and that is correct: §11.3's job is to keep a displaced meeting with its coach inside its block, not to re-run §4.7.
+
+   **Test expectations** are §16.
 
 ## 5. Assignment modes
 
@@ -112,14 +124,15 @@ A toggle selects one of two modes.
 - After the availability file is parsed, the UI shows an **FTE editor**: one row per coach, numeric input 0.05–1.00, default 1.00, persisted to localStorage keyed by coach name.
 - Coach capacity = (number of valid slots) × 3.
 - Target quota per coach = proportional to FTE across all coaches, scaled to total student count, computed by the largest-remainder method, then capped at capacity. If capping leaves a shortfall, redistribute the remainder to coaches with spare capacity (again by FTE proportion).
-- Students are assigned in file order: fill coach quotas in coach file order, slot by slot, offset 1→2→3. Each student takes the first placement that is still free, still within its coach's quota, and usable by their class block (§4.4a). With one class block this is exactly "student *i* takes placement *i*", the pre-v1.3 behaviour.
+- Students are assigned in file order: coach quotas are filled in coach file order, and within a coach the place offered is the one **§4.7 day-balancing** chooses — the day with the largest deficit, then that day's earliest free slot, offset 1→2→3. Each student takes the first such placement that is still free, still within its coach's quota, and usable by their class block (§4.4a).
+  - *Superseded note (v1.8).* Before §4.7, a coach's places were offered in flat §4.6 order, so with one class block the pass was exactly "student *i* takes placement *i*" — the pre-v1.3 behaviour. §4.7 replaces that order deliberately, so the equivalence no longer holds for a coach who works on more than one day; it still holds for a **single-day** coach. What is unchanged is that students are *considered* in file order and that `assignments` is emitted in that order, which is what §7.3's determinism clause relies on.
 - **Quota interpretation (normative).** A quota caps how many students a coach *takes*, not which slots are on offer: the whole of a coach's slot list stays available until their quota is used up. Truncating the list to its first *quota* placements would let one cohort's classes sitting on a coach's earliest slots starve that coach's entire quota, which is the global capacity loss §4.4a exists to prevent.
 - If no quota room is left anywhere, the surplus students are reported as **unassigned** with the reason `insufficient capacity`. If room remains but every remaining placement is during the student's own classes, the reason is `no free slot outside their class block`.
 
 ### 5.2 Pre-allocated
 
 - Requires the pairings file. Every student in the student list must appear in the pairings file (missing → unassigned, reason `no pairing`). Unknown coach names → unassigned, reason `coach not found`.
-- Within each coach, that coach's students are assigned in pairings-file order to the coach's slots, offset 1→2→3 per slot, skipping any placement that clashes with the student's own class block (§4.4a). Overflow → unassigned, reason `coach over capacity`; places left that the student's classes rule out → `no free slot outside their class block`.
+- Within each coach, that coach's students are assigned in pairings-file order to the coach's slots: the day is the one §4.7 day-balancing chooses (balanced over the number of students paired to that coach), then that day's slots in start-time order, offset 1→2→3 per slot, skipping any placement that clashes with the student's own class block (§4.4a). Overflow → unassigned, reason `coach over capacity`; places left that the student's classes rule out → `no free slot outside their class block`.
 
 ### 5.3 Class-block assignment (normative)
 
@@ -407,6 +420,7 @@ Pure functions, no DOM, so `tests.html` can exercise them:
 - `buildSlots(availability, classRowsOrBlocks)` → `[{coach, day, start, end, blockedFor}]`, where `blockedFor` lists the class-block ids the slot clashes with (§4.4a)
 - `slotAllowsClassBlock(slot, classBlock)` / `slotsForClassBlock(slots, classBlock)` → the student-specific validity test
 - `computeQuotas(coaches, fte, studentCount, slotCounts)` → `{coachName: quota}`
+- `balancedDayTargets(coachSlots, total)` → `{day: target}` in Mon→Sun order — the §4.7 per-day split of one coach's `total` (quota, or paired-student count), capped by each day's capacity with the remainder redistributed
 - `schedule(students, slots, mode, quotasOrPairings, knownCoaches, {classBlocks})` → `{assignments: [{student, coach, slot, offset}], unassigned: [{student, reason}]}`; omitting `classBlocks` skips the §5.3 checks
 - `expandToAppointments(assignments, startMonday, timeZone)` → appointment rows per §7.1, each carrying the student's `classBlock`
 - `expandClassSessions(classBlock, startMonday)` → one dated row per class per term week for that block, in date order — the class half of the §14.2 student timeline. Weeks 4/8/12 are included: they hold no *coaching*, but classes run as usual. Times stay naive campus wall-clock, exactly as uploaded and as the §4.4a clash check reads them
@@ -471,6 +485,8 @@ Blocking is a deterministic **post-pass** over the §4/§5 schedule. An appointm
 3. Otherwise the single meeting is reported as an **exception** with reason `no free slot in block N — coach blocked`. The student's other three meetings are unaffected.
 
 Displaced meetings never change coach. After the post-pass, all §9 invariants must still hold (no double-booking, no class-block overlap, no meetings in weeks 4/8/12, nothing on a blocked coach-week/date).
+
+**This rule is unchanged by §4.7 (normative).** Redistribution stays bounded to the **same coach and the same term block**, in the order above, and does **not** re-balance the coach's days: step 1 keeps the meeting on its own weekday and start time wherever it can, and step 2 falls back to the coach's §4.6 slot order, not to §4.7's day ranking. A coach's day balance may therefore end up uneven after weeks or dates are blocked — that is the correct outcome, because keeping a displaced meeting with its coach inside its block matters more here than the spread §4.7 sets up at assignment time.
 
 ### 11.4 Export and reporting
 
@@ -663,3 +679,20 @@ The booking views and the calendar export are asserted through their pure
 functions, without a DOM. The corresponding on-screen behaviour — the card, its
 toggle, its selectors, the enabled/disabled export button and the real download
 — is verified in the browser.
+
+## 16. Day-balanced allocation tests (v1.8)
+
+tests.html must exercise the real engine and assert at least:
+
+1. `balancedDayTargets` splits a quota of 10 across four 6-place days as 3/3/2/2 — the §4.7 worked example — and the schedule really does place 3/3/2/2, not 6/4/0/0.
+2. A day's target is capped by that day's capacity and the remainder moves to the days with room; a target never exceeds the places that exist; a coach with no valid slot has no day to balance.
+3. Within a day the order is unchanged: earliest start time first, offsets 1→2→3 before the next slot.
+4. Days are chosen in the stated tie-break order: largest deficit, then fewest meetings so far, then earliest day.
+5. A single-day coach is unaffected — exactly the §4.6 order.
+6. Balance is per coach: one coach's days never rebalance another's, and coach file order is unchanged.
+7. When a student's target day is barred by their own class block (§4.4a), they fall to the day with the largest deficit, nobody is placed during their own class, and the same hour is still offered to a cohort that can use it.
+8. Balancing never breaks the §5.1 quota, the §4.5 per-slot capacity, or the §5.1/§5.2 unassigned reasons.
+9. Pre-allocated mode is balanced across days too, with pairings-file order still deciding who goes first, and overflow still `coach over capacity`.
+10. Identical inputs produce an identical balanced schedule (§4.6).
+11. A balanced run still satisfies the §9 invariants end to end.
+12. The §11.3 post-pass keeps its own rule: a displaced meeting stays on its own weekday, start time, coach and term block rather than being re-balanced.

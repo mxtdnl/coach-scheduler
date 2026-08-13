@@ -39,6 +39,7 @@ import {
   slotAllowsClassBlock,
   slotsForClassBlock,
   computeQuotas,
+  balancedDayTargets,
   schedule,
   expandToAppointments,
   applyBlocks,
@@ -50,6 +51,7 @@ import {
   minutesToTime,
   serviceNameFor,
   BLOCK_WEEKS,
+  DAY_ORDER,
   MEETING_STATUS,
   CLASS_BLOCK_TOTAL_HOURS,
   CLASS_BLOCK_TOTAL_MINUTES,
@@ -373,8 +375,12 @@ test('paired students are assigned to their own coach, offset 1→2→3 per slot
     S1: 'Coach B/Tuesday/09:30#1',
     S3: 'Coach B/Tuesday/09:30#2',
     S2: 'Coach A/Monday/09:00#1',
-    S4: 'Coach A/Monday/09:00#2',
-  }, 'each coach fills their own first slot, in pairings-file order');
+    S4: 'Coach A/Wednesday/10:00#1',
+  }, 'pairings-file order decides who; §4.7 spreads a coach over their own days');
+  // Coach B works one day, so both of their students stack in the first slot,
+  // offset 1 then 2 — §4.6 order, unchanged. Coach A works Monday and
+  // Wednesday, so their two students take one day each rather than doubling up
+  // on Monday, which is what this rule is for.
 });
 
 test('students missing from the pairings file are unassigned with "no pairing"', () => {
@@ -410,6 +416,243 @@ test('students beyond a coach capacity are unassigned with "coach over capacity"
   assertDeep(assignments.map((a) => a.offset), [1, 2, 3]);
   assertDeep(unassigned.map((u) => `${u.student.contactSfId}:${u.reason}`), ['S4:coach over capacity', 'S5:coach over capacity']);
   assertEqual(REASONS.COACH_OVER_CAPACITY, 'coach over capacity');
+});
+
+// ---- §4.7 day-balanced allocation ----
+
+group('§4.7 — day-balanced allocation');
+
+/**
+ * Day → how many students a coach took there, in Mon→Sun order. The order the
+ * days are *filled* in is §4.7's business (largest deficit first), so the
+ * counts are keyed in calendar order to keep these assertions about the spread.
+ */
+function dayCountsOf(assignments, coach) {
+  const counts = new Map();
+  assignments
+    .filter((a) => !coach || a.coach === coach)
+    .forEach((a) => counts.set(a.slot.day, (counts.get(a.slot.day) || 0) + 1));
+  const ordered = {};
+  DAY_ORDER.filter((day) => counts.has(day)).forEach((day) => { ordered[day] = counts.get(day); });
+  return ordered;
+}
+
+/** The place each student ended up in, as `day/start#offset`, in student order. */
+const placesOf = (assignments) =>
+  assignments.map((a) => `${a.slot.day}/${minutesToTime(a.slot.start)}#${a.offset}`);
+
+// The SPEC.md §4.7 worked example: two valid slots on each of four days, so
+// each day can hold 6 meetings (§4.5: 3 students per slot, one per offset).
+const BAL_AVAILABILITY = ['Monday', 'Tuesday', 'Wednesday', 'Thursday'].map((day) =>
+  avail('Coach A', day, '09:00', '10:30', 'C-A', 'a@example.com'));
+const BAL_SLOTS = buildSlots(BAL_AVAILABILITY, []);
+
+test('the worked-example fixture really is 2 slots and 6 places per day', () => {
+  assertDeep(dayCountsOf(BAL_SLOTS.map((slot) => ({ coach: slot.coach, slot })), 'Coach A'),
+    { Monday: 2, Tuesday: 2, Wednesday: 2, Thursday: 2 }, 'two 60-minute windows per day');
+  assertDeep(BAL_SLOTS.filter((s) => s.day === 'Monday').map((s) => minutesToTime(s.start)), ['09:00', '09:30']);
+});
+
+test('a quota of 10 over four 6-place days is targeted 3/3/2/2, not 6/4/0/0', () => {
+  assertDeep(balancedDayTargets(BAL_SLOTS, 10),
+    { Monday: 3, Tuesday: 3, Wednesday: 2, Thursday: 2 },
+    'largest remainder over four equal days, ties to the earlier day');
+});
+
+test('the schedule really does spread 10 students 3/3/2/2 (the §4.7 example)', () => {
+  const { assignments, unassigned } = schedule(students(10), BAL_SLOTS, 'auto', { 'Coach A': 10 });
+  assertEqual(unassigned.length, 0);
+  assertDeep(dayCountsOf(assignments, 'Coach A'), { Monday: 3, Tuesday: 3, Wednesday: 2, Thursday: 2 });
+  assert(dayCountsOf(assignments, 'Coach A').Monday !== 6, 'the pre-v1.8 pile-up of 6/4/0/0 is gone');
+});
+
+test('within a day the order is unchanged: start time, then offset 1→2→3', () => {
+  // 16 students over four days → 4 each, so every day has to move past its
+  // first slot and the within-day order is visible.
+  const { assignments, unassigned } = schedule(students(16), BAL_SLOTS, 'auto', { 'Coach A': 16 });
+  assertEqual(unassigned.length, 0);
+  assertDeep(dayCountsOf(assignments, 'Coach A'), { Monday: 4, Tuesday: 4, Wednesday: 4, Thursday: 4 });
+  const monday = assignments.filter((a) => a.slot.day === 'Monday');
+  assertDeep(monday.map((a) => `${minutesToTime(a.slot.start)}#${a.offset}`),
+    ['09:00#1', '09:00#2', '09:00#3', '09:30#1'],
+    'the day fills its earliest slot 1→2→3 before opening the next one');
+});
+
+test('students are handed out day by day, in the stated tie-break order', () => {
+  const { assignments } = schedule(students(10), BAL_SLOTS, 'auto', { 'Coach A': 10 });
+  assertDeep(placesOf(assignments), [
+    // Round 1: every day has a deficit of 2 or 3, so they go earliest-day first.
+    'Monday/09:00#1', 'Tuesday/09:00#1', 'Wednesday/09:00#1', 'Thursday/09:00#1',
+    // Monday and Tuesday still have the larger deficit (3 vs 2).
+    'Monday/09:00#2', 'Tuesday/09:00#2',
+    // All four now sit at a deficit of 1; fewest-so-far puts Wed and Thu first.
+    'Wednesday/09:00#2', 'Thursday/09:00#2',
+    // Only Monday and Tuesday have anything left to hit their target of 3.
+    'Monday/09:00#3', 'Tuesday/09:00#3',
+  ]);
+});
+
+test('a day target is capped by that day capacity, and the remainder moves', () => {
+  // Monday holds one slot (3 places), Tuesday three (9). An even 5/5 split is
+  // impossible, so Monday takes 3 and Tuesday absorbs the rest.
+  const slots = buildSlots([
+    avail('Coach A', 'Monday', '09:00', '10:00', 'C-A', 'a@example.com'),
+    avail('Coach A', 'Tuesday', '09:00', '11:00', 'C-A', 'a@example.com'),
+  ], []);
+  assertDeep(balancedDayTargets(slots, 10), { Monday: 3, Tuesday: 7 });
+  const { assignments, unassigned } = schedule(students(10), slots, 'auto', { 'Coach A': 10 });
+  assertEqual(unassigned.length, 0);
+  assertDeep(dayCountsOf(assignments, 'Coach A'), { Monday: 3, Tuesday: 7 });
+});
+
+test('a target never exceeds the places that exist', () => {
+  assertDeep(balancedDayTargets(BAL_SLOTS, 100),
+    { Monday: 6, Tuesday: 6, Wednesday: 6, Thursday: 6 }, 'capacity is the ceiling');
+  assertDeep(balancedDayTargets(BAL_SLOTS, 0), { Monday: 0, Tuesday: 0, Wednesday: 0, Thursday: 0 });
+  assertDeep(balancedDayTargets([], 5), {}, 'a coach with no valid slot has no day to balance');
+});
+
+test('a single-day coach is unaffected: exactly the §4.6 order', () => {
+  const slots = buildSlots([avail('Coach A', 'Monday', '09:00', '11:00', 'C-A', 'a@example.com')], []);
+  const { assignments, unassigned } = schedule(students(7), slots, 'auto', { 'Coach A': 7 });
+  assertEqual(unassigned.length, 0);
+  assertDeep(placesOf(assignments), [
+    'Monday/09:00#1', 'Monday/09:00#2', 'Monday/09:00#3',
+    'Monday/09:30#1', 'Monday/09:30#2', 'Monday/09:30#3',
+    'Monday/10:00#1',
+  ], 'with one day there is nothing to balance, so slot order and offsets run as before');
+});
+
+test('balancing is per coach: one coach days never rebalance another coach', () => {
+  const slots = buildSlots([
+    ...BAL_AVAILABILITY,
+    avail('Coach B', 'Friday', '09:00', '11:00', 'C-B', 'b@example.com'),
+  ], []);
+  const { assignments } = schedule(students(14), slots, 'auto', { 'Coach A': 10, 'Coach B': 4 });
+  assertDeep(dayCountsOf(assignments, 'Coach A'), { Monday: 3, Tuesday: 3, Wednesday: 2, Thursday: 2 });
+  assertDeep(dayCountsOf(assignments, 'Coach B'), { Friday: 4 }, 'Coach B has one day and takes all four');
+  assertDeep([...new Set(assignments.map((a) => a.coach))], ['Coach A', 'Coach B'], 'coach file order is unchanged');
+});
+
+test('a class-block clash sends the student to the day with the largest deficit', () => {
+  // Block A is in class all Wednesday morning, so none of Coach A's Wednesday
+  // places are usable by them — but they are still usable by Block B, so the
+  // windows exist (§4.4a) and Wednesday still gets a target.
+  const classes = [
+    { classBlock: 'Block A', day: 'Wednesday', start: t('09:00'), end: t('10:30'), className: 'Maths' },
+    { classBlock: 'Block B', day: 'Friday', start: t('09:00'), end: t('10:00'), className: 'Physics' },
+  ];
+  const blocks = buildClassBlocks(classes);
+  const slots = buildSlots(['Monday', 'Tuesday', 'Wednesday'].map((day) =>
+    avail('Coach A', day, '09:00', '10:30', 'C-A', 'a@example.com')), blocks);
+  assertEqual(slots.filter((s) => s.day === 'Wednesday').length, 2, 'the Wednesday windows still exist');
+  assertDeep(balancedDayTargets(slots, 6), { Monday: 2, Tuesday: 2, Wednesday: 2 }, 'Wednesday is targeted');
+
+  const blockA = students(6).map((s) => ({ ...s, classBlock: 'Block A' }));
+  const { assignments, unassigned } = schedule(blockA, slots, 'auto', { 'Coach A': 6 }, ['Coach A'], { classBlocks: blocks });
+  assertEqual(unassigned.length, 0, 'a barred target day costs nobody their place');
+  assertDeep(dayCountsOf(assignments, 'Coach A'), { Monday: 3, Tuesday: 3 },
+    'Wednesday cannot take its two, so they fall to the days with the largest deficit');
+  assert(assignments.every((a) => slotAllowsClassBlock(a.slot, a.student.classBlock)),
+    'and nobody is placed during their own class');
+
+  // The same Wednesday hour is still on offer to a cohort that can use it.
+  const blockB = students(1, 'B').map((s) => ({ ...s, classBlock: 'Block B' }));
+  const mixed = schedule([...blockA, ...blockB], slots, 'auto', { 'Coach A': 9 }, ['Coach A'], { classBlocks: blocks });
+  assertEqual(mixed.assignments.find((a) => a.student.contactSfId === 'B1').slot.day, 'Wednesday',
+    'Wednesday still has the largest deficit, and Block B can take it');
+});
+
+test('balancing never breaks quota, capacity or the unassigned reasons', () => {
+  const { assignments, unassigned } = schedule(students(30), BAL_SLOTS, 'auto', { 'Coach A': 20 });
+  assertEqual(assignments.length, 20, 'the §5.1 quota still caps what the coach takes');
+  assertEqual(unassigned.length, 10);
+  assert(unassigned.every((u) => u.reason === REASONS.INSUFFICIENT_CAPACITY), 'the §5.1 reason is unchanged');
+  assertDeep(dayCountsOf(assignments, 'Coach A'), { Monday: 5, Tuesday: 5, Wednesday: 5, Thursday: 5 });
+  const perSlot = new Map();
+  assignments.forEach((a) => {
+    const key = `${slotLabel(a.slot)}`;
+    if (!perSlot.has(key)) perSlot.set(key, new Set());
+    assert(!perSlot.get(key).has(a.offset), `offset ${a.offset} used twice in ${key}`);
+    perSlot.get(key).add(a.offset);
+  });
+  perSlot.forEach((offsets, key) => assert(offsets.size <= 3, `${key} holds more than 3 students`));
+});
+
+test('pre-allocated mode is balanced across days too (§5.2)', () => {
+  const all = students(10);
+  const pairings = all.map((s) => ({ contactSfId: s.contactSfId, coachName: 'Coach A' }));
+  const { assignments, unassigned } = schedule(all, BAL_SLOTS, 'pre-allocated', pairings, ['Coach A']);
+  assertEqual(unassigned.length, 0);
+  assertDeep(dayCountsOf(assignments, 'Coach A'), { Monday: 3, Tuesday: 3, Wednesday: 2, Thursday: 2 });
+  assertDeep(placesOf(assignments).slice(0, 4),
+    ['Monday/09:00#1', 'Tuesday/09:00#1', 'Wednesday/09:00#1', 'Thursday/09:00#1'],
+    'pairings-file order still decides who goes first');
+});
+
+test('pre-allocated overflow past a coach capacity is still "coach over capacity"', () => {
+  const all = students(30);
+  const pairings = all.map((s) => ({ contactSfId: s.contactSfId, coachName: 'Coach A' }));
+  const { assignments, unassigned } = schedule(all, BAL_SLOTS, 'pre-allocated', pairings, ['Coach A']);
+  assertEqual(assignments.length, 24, 'eight slots × 3');
+  assertDeep(dayCountsOf(assignments, 'Coach A'), { Monday: 6, Tuesday: 6, Wednesday: 6, Thursday: 6 });
+  assert(unassigned.every((u) => u.reason === REASONS.COACH_OVER_CAPACITY), 'the §5.2 reason is unchanged');
+});
+
+test('identical inputs produce an identical balanced schedule (§4.6)', () => {
+  const all = students(13);
+  const shape = (r) => ({
+    assignments: r.assignments.map((a) => `${a.student.contactSfId}|${slotLabel(a.slot)}|${a.offset}`),
+    unassigned: r.unassigned.map((u) => `${u.student.contactSfId}|${u.reason}`),
+  });
+  const run = () => schedule(all, BAL_SLOTS, 'auto', { 'Coach A': 13 });
+  assertDeep(shape(run()), shape(run()), 'two runs, one answer');
+  assertDeep(shape(run()), shape(schedule(all, [...BAL_SLOTS], 'auto', { 'Coach A': 13 })),
+    'and a copy of the slot list changes nothing');
+});
+
+test('a balanced run still satisfies the §9 invariants end to end', () => {
+  const { assignments } = schedule(students(20), BAL_SLOTS, 'auto', { 'Coach A': 20 });
+  const rows = expandToAppointments(assignments, START_MONDAY, LONDON);
+  assertEqual(rows.length, 80, 'four meetings each');
+  assertEqual(rows.filter((r) => [4, 8, 12].includes(r.weekNumber)).length, 0, 'nothing in weeks 4/8/12');
+  const seen = new Set();
+  rows.forEach((r) => {
+    const key = `${r.coachName}|${r.date}|${r.startTime}`;
+    assert(!seen.has(key), `coach double-booked: ${key}`);
+    seen.add(key);
+  });
+  const byStudent = new Map();
+  rows.forEach((r) => {
+    const key = `${r.coachName}|${r.day}|${r.startTime}`;
+    if (!byStudent.has(r.contactSfId)) byStudent.set(r.contactSfId, key);
+    assertEqual(byStudent.get(r.contactSfId), key, `${r.contactSfId} changed slot between meetings`);
+  });
+});
+
+test('§11.3 redistribution keeps its own rule and does not re-balance days', () => {
+  // One place per day, so a displaced meeting could only "rebalance" by
+  // changing day — and §11.3 does not do that: it stays on the same day and
+  // time in another week of the same block.
+  const slots = buildSlots(['Monday', 'Tuesday'].map((day) =>
+    avail('Coach A', day, '09:00', '10:00', 'C-A', 'a@example.com')), []);
+  const { assignments } = schedule(students(2), slots, 'auto', { 'Coach A': 2 });
+  assertDeep(placesOf(assignments), ['Monday/09:00#1', 'Tuesday/09:00#1'], 'one student per day');
+
+  const rows = expandToAppointments(assignments, START_MONDAY, LONDON);
+  const { appointments, exceptions } = applyBlocks(rows, [{ coach: 'Coach A', week: 1 }], slots,
+    { timeZone: LONDON, startMonday: START_MONDAY });
+  assertEqual(exceptions.length, 0, 'both had somewhere to go');
+
+  const moved = appointments.filter((r) => r.rescheduledFromWeek !== '');
+  assertEqual(moved.length, 2, 'both week-1 meetings moved');
+  moved.forEach((row) => {
+    const original = rows.find((r) => r.contactSfId === row.contactSfId && r.meetingNumber === row.meetingNumber);
+    assertEqual(row.day, original.day, `${row.contactSfId} kept their weekday`);
+    assertEqual(row.startTime, original.startTime, 'and their start time');
+    assertEqual(row.coachName, original.coachName, 'and their coach (§11.3)');
+    assertEqual(blockOfWeek(row.weekNumber), blockOfWeek(original.weekNumber), 'and their term block');
+  });
 });
 
 // ---- §4.2 / §7.1 expansion ----
@@ -1767,8 +2010,10 @@ test('a blocked meeting is shown as the schedule actually rebooked it', () => {
   const view = buildCoachBookings(BK.appointments, 'Coach A');
   assert(!view.rows.some((row) => row.weekNumber === 1), 'nothing is left in the blocked week');
   const moved = view.rows.filter((row) => row.rescheduledFromWeek !== '');
-  assertEqual(moved.length, 1, 'exactly one meeting was moved');
-  assertEqual(moved[0].rescheduledFromWeek, 1, 'and it says which week it came from');
+  // \u00a74.7 puts Coach A's two students on different days, so both hold offset 1
+  // and both lose their week-1 meeting to the block; both are rebooked.
+  assertEqual(moved.length, 2, 'both week-1 meetings were moved');
+  moved.forEach((row) => assertEqual(row.rescheduledFromWeek, 1, 'and each says which week it came from'));
   assert(
     moved[0] === BK.appointments.find((row) => row.rescheduledFromWeek !== ''),
     'the view holds the schedule\u2019s own row, not a copy'
