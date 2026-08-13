@@ -1,10 +1,10 @@
 # Coaching Meeting Scheduler — Technical Specification
 
-Version 1.5 — 12 August 2026 (adds §14/§15 the Results booking views — by coach and by student — and §7.4 the coach calendar export, one `.ics` per meeting bundled in a `.zip`; §7.3/§13 the auto-assign coach-assignments batch upload from v1.4; §3.1/§4.4a/§5.3 multiple class blocks from v1.3; §6.1 Campus and §7.1 export columns from v1.2; §11 Blocked weeks/dates from v1.1)
+Version 1.6 — 13 August 2026 (§7.4 the coach calendar export is now a **single `.ics` file per coach**, holding one `VEVENT` per meeting, replacing the v1.5 ZIP of one file per meeting; v1.5 added §14/§15 the Results booking views — by coach and by student — and the coach calendar export itself; §7.3/§13 the auto-assign coach-assignments batch upload from v1.4; §3.1/§4.4a/§5.3 multiple class blocks from v1.3; §6.1 Campus and §7.1 export columns from v1.2; §11 Blocked weeks/dates from v1.1)
 
 ## 1. Purpose
 
-A browser-based tool that allocates recurring 1-hour coaching meetings to students and coaches for a 15-week term. It reads Excel uploads (class timetables, coach availability, student list, optional student–coach pairings), computes a clash-free schedule under fixed cadence rules, and exports the result as Excel: one row per appointment, plus — in auto-assign mode — a second batch-upload file with one row per student/coach assignment (§7.3). The finished schedule can then be inspected from either side on the Results step (§14: a coach's students, or a student's week) and a selected coach's meetings downloaded as calendar files (§7.4). No server. No data leaves the browser. Hosted on GitHub Pages.
+A browser-based tool that allocates recurring 1-hour coaching meetings to students and coaches for a 15-week term. It reads Excel uploads (class timetables, coach availability, student list, optional student–coach pairings), computes a clash-free schedule under fixed cadence rules, and exports the result as Excel: one row per appointment, plus — in auto-assign mode — a second batch-upload file with one row per student/coach assignment (§7.3). The finished schedule can then be inspected from either side on the Results step (§14: a coach's students, or a student's week) and a selected coach's whole term downloaded as one calendar file (§7.4). No server. No data leaves the browser. Hosted on GitHub Pages.
 
 A run may contain **several class blocks** — distinct student cohorts, each with its own class timetable. Coaching availability is coach-specific and spans the whole run; class clashes are per student, judged against their own class block only (§4.4a).
 
@@ -27,8 +27,7 @@ A run may contain **several class blocks** — distinct student cohorts, each wi
 │   ├── scheduler.js    # Pure scheduling engine (no DOM access)
 │   ├── exporter.js     # Default + custom-mapped appointments export, the §7.3 batch upload, and the §7.4 coach calendar
 │   ├── bookings.js     # Pure view models for the §14 Results booking views
-│   ├── ics.js          # iCalendar (RFC 5545) serialiser: one VEVENT per meeting
-│   ├── zip.js          # Minimal stored-entry ZIP writer + entry-name sanitising
+│   ├── ics.js          # iCalendar (RFC 5545) serialiser: one calendar, one VEVENT per meeting
 │   ├── timezone.js     # Campus → IANA zone, offset-bearing ISO formatting
 │   └── storage.js      # localStorage read/write helpers
 ├── templates/          # The 4 .xlsx templates, downloadable from the UI
@@ -139,7 +138,7 @@ A single page with a stepper:
 1. **Setup** — start date picker (with Monday normalisation notice), campus selector (§6.1), mode toggle, template download links.
 2. **Upload** — drag-and-drop or file pickers for the 3 (or 4) files, with per-file validation results shown immediately (row counts, errors with row numbers).
 3. **Review** — a **Class blocks** card (§6.3); FTE editor (auto mode only); a capacity summary table (coach, valid slots, capacity, FTE, quota); warnings.
-4. **Results** — summary (students scheduled / unassigned, per-coach utilisation), a **Class blocks** card (§6.4), an unassigned-students table with reasons (including each student's class block), a preview of the first 50 appointment rows with the **Export appointments** button, a **Bookings** card for inspecting the schedule by coach or by student (§14) carrying the **Export coach calendar (.zip)** control (§7.4), and — in auto-assign mode only — a **Coach assignments** card with the **Export coach assignments** button (§7.3). The run therefore produces **two** spreadsheet export files in auto-assign mode and one in pre-allocated mode, plus the per-coach calendar archive on demand.
+4. **Results** — summary (students scheduled / unassigned, per-coach utilisation), a **Class blocks** card (§6.4), an unassigned-students table with reasons (including each student's class block), a preview of the first 50 appointment rows with the **Export appointments** button, a **Bookings** card for inspecting the schedule by coach or by student (§14) carrying the **Export coach calendar (.ics)** control (§7.4), and — in auto-assign mode only — a **Coach assignments** card with the **Export coach assignments** button (§7.3). The run therefore produces **two** spreadsheet export files in auto-assign mode and one in pre-allocated mode, plus the per-coach calendar file on demand.
 5. **Export settings** (collapsible panel) — see §7.
 
 All errors must be human-readable and name the file, row, and problem. The app must never fail silently.
@@ -167,8 +166,8 @@ one row per appointment, always available), and — in auto-assign mode only —
 the coach-assignments batch upload (§7.3, one row per scheduled student). They
 are separate files with separate buttons and separate filenames; neither
 replaces the other. A third, on-demand download exists for one coach at a time:
-the coach calendar archive (§7.4), one `.ics` file per meeting inside a single
-`.zip`.
+the coach calendar (§7.4), a single `.ics` file holding every one of that
+coach's meetings.
 
 ### 7.1 Default columns (one row per appointment; 4 rows per scheduled student)
 
@@ -288,51 +287,67 @@ matching the §7.1 timestamp convention while being clearly distinct from
 
 **Test expectations** are §13.
 
-### 7.4 Coach calendar export (v1.5, normative)
+### 7.4 Coach calendar export (v1.6, normative)
 
 An on-demand, per-coach download offered inside the §14 Bookings card: **one
-`.ics` file per scheduled coaching meeting** for the selected coach, bundled
-into a **single `.zip`**. It is a third export, alongside §7.1 and §7.3, and
-changes neither of them.
+`.ics` file holding every scheduled coaching meeting** for the selected coach.
+It is a third export, alongside §7.1 and §7.3, and changes neither of them.
+
+**One file, not one per meeting (v1.6).** The coach is the person who has to
+act on this download, and the act must be a single one: open — or import — the
+file once, and the whole term appears in Outlook. A ZIP of per-meeting files
+(v1.5) made that a manual, sixty-times-repeated job, so it is replaced. The
+file is a single `VCALENDAR` with one `VEVENT` per meeting; a calendar
+containing only one of a coach's meetings is **not** acceptable output, and
+neither is a file that omits one.
 
 **Availability.** The control lives in the Bookings card's **By coach** view
-and is labelled `Export coach calendar (.zip)`. It is disabled until a coach is
+and is labelled `Export coach calendar (.ics)`. It is disabled until a coach is
 selected, and stays disabled when the selected coach has no exportable meeting.
-Its accessible name states that it downloads a ZIP of calendar files for the
-selected coach. The panel says which case applies: no coach chosen, the coach
-has no meetings, or the coach's meetings carry no usable date and time.
+Its accessible name states that it downloads one calendar file holding every
+meeting for the selected coach. The panel says which case applies: no coach
+chosen, the coach has no meetings, or the coach's meetings carry no usable date
+and time.
 
-**Source of truth (normative).** The archive is built from the **final**
+**Source of truth (normative).** The file is built from the **final**
 appointment rows — after §5 assignment and after the §11.3 blocking post-pass —
 and from nothing else.
 
 - Exactly one `VEVENT` per scheduled meeting: a coach with *n* meetings gets
-  *n* files and *n* events.
+  one file containing *n* events.
 - Only the selected coach's meetings. No other coach's meeting is ever in the
-  archive.
+  file.
 - An unassigned student (§5.1, §5.2, §5.3) has no meetings, so contributes
   nothing. A §11.3 exception has been removed from the schedule and is
   therefore absent; a displaced meeting appears once, at the week it was
   rebooked to.
+- Events are written in chronological order, so the file reads as the coach's
+  term.
 - Dates and times are never recalculated. The `.ics` instants are derived from
   the appointment's own `Meeting Start/End Date & Time` values (§7.1).
 - The export is read-only: it does not modify the appointment rows, the
   assignments, or any stored setting.
-- A single `.ics` containing every meeting is **not** acceptable output, and
-  neither is an empty or one-entry-less archive.
+- A coach with no exportable meeting produces no file at all: an empty calendar
+  imports as nothing and is refused with a message, not downloaded.
 
-**Event fields.** Each file is a complete `VCALENDAR` (`VERSION:2.0`, `PRODID`,
-`CALSCALE:GREGORIAN`, `METHOD:PUBLISH`) containing exactly one `VEVENT` with:
+**Calendar fields.** The file is one `VCALENDAR` (`VERSION:2.0`, `PRODID`,
+`CALSCALE:GREGORIAN`, `METHOD:PUBLISH`) carrying `X-WR-CALNAME` — the coach's
+name — so the import is recognisable rather than an untitled block of events,
+and `X-WR-TIMEZONE`, the run's campus zone (§6.1). Each meeting is one `VEVENT`
+with:
 
 | Property | Value |
 |---|---|
 | `UID` | deterministic and unique per meeting: student id, meeting number, start instant, coach, plus an `@term-scheduler` domain |
-| `DTSTAMP` | the generation time, in UTC |
+| `DTSTAMP` | the generation time, in UTC; one stamp shared by every event in the file |
 | `DTSTART` / `DTEND` | the appointment's start/end instants, as UTC date-times (`YYYYMMDDTHHMMSSZ`) |
 | `SUMMARY` | `<student name> — <Service Name>`, e.g. `Jane Doe — Coaching 1 - Meeting 2` |
 | `DESCRIPTION` | student email, Contact SF ID, class block, coach, term week, "Moved from week N" where §11.4 applies, and the campus zone |
 | `LOCATION` | the run's campus label (§6.1) |
 | `STATUS` / `TRANSP` | `CONFIRMED` / `OPAQUE` |
+
+Deterministic UIDs are what make a second export safe: re-importing the same
+schedule updates the same entries rather than duplicating a coach's term.
 
 **Time-zone semantics (normative).** Date-times are written in **UTC form**,
 converted from the offset-bearing instants the appointments export already
@@ -348,30 +363,21 @@ folded at 75 **octets** with a leading space, never splitting a multi-byte
 character. `TEXT` values escape backslash, semicolon and comma, and turn a
 newline into a literal `\n`, so a student called `Smith, Jr.`, a coach called
 `O'Hara; Jr` or a campus written `London; Bloomsbury` cannot split a property.
+No `ORGANIZER` or `ATTENDEE` is written: the file is a published calendar to be
+imported, not a meeting invitation to be responded to.
 
-**Filenames (normative).**
+**Filename (normative).** `<coach-name>_calendar_YYYY-MM-DD_HHMM.ics`, the
+coach's name slugified (lower case, non-alphanumerics collapsed to `-`) and the
+timestamp matching the §7.1/§7.3 convention. Slugifying is also what keeps a
+coach's name from producing a name a file system would refuse: no path
+separators, no `..`, no control characters, and a name that reduces to nothing
+falls back to `coach`.
 
-- Archive: `<coach-name>_calendar_YYYY-MM-DD_HHMM.zip`, the coach's name
-  slugified (lower case, non-alphanumerics collapsed to `-`) and the timestamp
-  matching the §7.1/§7.3 convention.
-- Entry: `YYYY-MM-DD_HHMM_<student-name>_meeting-N.ics`, so entries sort
-  chronologically and read at a glance. Deterministic: the same meeting always
-  produces the same name.
-- Entry names are sanitised so a coach or student name can never create an
-  unsafe or invalid path: path separators, `.` and `..` segments, control
-  characters and the characters Windows forbids are removed, and a name that
-  reduces to nothing falls back to a generated one.
-- Two entries that would otherwise share a name are suffixed `_2`, `_3`, … so
-  no meeting is silently overwritten inside the archive.
-
-**Format.** A real ZIP archive: local file headers, a central directory and an
-end-of-central-directory record, entries **stored** (no compression) with
-correct CRC-32 values and the UTF-8 filename flag set. It is written by the
-app's own small `zip.js`, not by a third-party library: the only archive this
-app produces is a handful of small text files, and SPEC.md §2 keeps the project
-to plain modules with one external dependency. `.ics` generation is likewise
-the app's own `ics.js`. Neither uses a browser API beyond `Blob`,
-`URL.createObjectURL` and `TextEncoder`.
+**Format.** UTF-8 text, downloaded as `text/calendar`, written by the app's own
+`ics.js` — pure, DOM-free, and using no browser API beyond `Blob`,
+`URL.createObjectURL` and `TextEncoder`. SPEC.md §2 keeps the project to plain
+modules with one external dependency, and a single text file needs no archive
+writer at all (the v1.5 `zip.js` is therefore gone).
 
 **Test expectations** are §15.
 
@@ -420,16 +426,15 @@ It exposes the §7.4 coach calendar the same way:
 
 - `coachMeetings(appointments, coach)` → that coach's rows from the final schedule
 - `exportableCoachMeetings(appointments, coach)` → those of them that can become events, chronologically; what the UI counts to enable its control
-- `buildCoachCalendarFiles(appointments, coach, options)` → `[{name, content, appointment}]`, one per meeting
-- `buildCoachCalendarZip(appointments, coach, options)` → `{bytes, files, filename}`, without downloading
+- `buildCoachCalendar(appointments, coach, options)` → `{content, filename, meetings}`, the whole file as text, without downloading
 - `buildCoachCalendarFilename(coach, now)` / `exportCoachCalendar(appointments, coach, options)`
 
-`ics.js` and `zip.js` are pure and DOM-free:
+`ics.js` is pure and DOM-free:
 
 - `escapeIcsText` / `foldIcsLine` / `serialiseIcsLines` / `icsUtcStamp` / `slugify`
-- `meetingUid(appointment)` / `meetingSummary` / `meetingDescription` / `buildMeetingIcs(appointment, options)`
-- `icsFileNameForMeeting(appointment)` / `isExportableMeeting(appointment)`
-- `crc32(bytes)` / `sanitiseZipEntryName(name)` / `dedupeEntryNames(names)` / `buildZip(files, {date})`
+- `meetingUid(appointment)` / `meetingSummary` / `meetingDescription` / `meetingEventLines(appointment, options)`
+- `buildCalendarIcs(appointments, options)` → one VCALENDAR holding one VEVENT per meeting
+- `isExportableMeeting(appointment)`
 
 `bookings.js` holds the §14 view models, built from the same final appointment
 rows and the scheduler's own `assignments`/`unassigned`/`exceptions`:
@@ -619,13 +624,13 @@ segment is distinguished by its checked radio and its fill, not by colour
 alone. Both tables use `<thead>` header cells and a visually hidden `<caption>`
 naming what the table lists, and the results panel is a live region so a new
 selection is announced. Nothing depends on hover. The export button's
-accessible name states that it downloads a ZIP of calendar files for the
-selected coach.
+accessible name states that it downloads one calendar file holding every
+meeting for the selected coach.
 
-## 15. Booking-view and coach-calendar tests (v1.5)
+## 15. Booking-view and coach-calendar tests (v1.6)
 
-tests.html must exercise the real view models, the real ICS serialiser and the
-real ZIP writer, and assert at least:
+tests.html must exercise the real view models and the real ICS serialiser, and
+assert at least:
 
 1. A coach selection returns all and only that coach's scheduled students and appointments.
 2. Coach bookings are sorted chronologically.
@@ -639,17 +644,17 @@ real ZIP writer, and assert at least:
 10. The booking views are unchanged after the schedule is rebuilt from the same inputs.
 11. No selection, an unknown coach, an unknown student and an empty appointment list all return empty views rather than throwing.
 12. Selecting a coach with meetings is what enables the export control; no coach, or a coach with no meetings, does not.
-13. The generated ZIP contains exactly one `.ics` per scheduled meeting for the selected coach, and no extras.
-14. No meeting belonging to another coach is in the archive, and no meeting the schedule does not contain.
-15. Each generated `.ics` contains exactly one `VEVENT`, with the required properties present.
+13. The generated `.ics` is a single `VCALENDAR` containing exactly one `VEVENT` per scheduled meeting for the selected coach, and no extras.
+14. No meeting belonging to another coach is in the file, and no meeting the schedule does not contain.
+15. Every event carries the required properties, the calendar-level properties are written once, and the events are in chronological order.
 16. `DTSTART` and `DTEND` match the appointment's own instants, on both sides of a daylight saving change.
 17. The event carries the correct student, coach, class block and campus context.
 18. ICS text escaping handles backslashes, semicolons, commas and newlines, in student, coach and location values.
 19. Lines are CRLF-terminated and folded at 75 octets without splitting a multi-byte character; unfolding restores the value.
 20. UIDs are unique across a coach's meetings and across coaches, and are deterministic.
-21. Entry names are readable and deterministic, collisions are suffixed rather than overwritten, and no name can escape the archive.
-22. The archive is a real ZIP: signatures, entry count and CRC-32 values agree.
-23. A coach with no meetings produces no archive at all, and an empty archive is refused.
+21. The filename names the coach and the generation time, ends `.ics`, and carries no character a file system would refuse.
+22. Re-exporting the same schedule produces byte-identical output, and every event shares one `DTSTAMP`.
+23. A coach with no meetings produces no file at all, and an eventless calendar is refused.
 24. The export does not modify the appointment rows.
 25. The §7.1 appointments export and the §7.3 batch upload are unaffected.
 

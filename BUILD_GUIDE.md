@@ -165,6 +165,19 @@ Run after Session 9. Replace `SPEC.md` with the v1.5 version before starting.
 
 **Verify:** with several coaches and students, confirm the coach view lists only that coach's meetings in date order with sensible totals; confirm a student's timeline shows both classes and coaching and never another block's classes; confirm an unassigned student shows classes, no meetings and a reason; block a coach's week and confirm the moved meeting shows its new date and a "moved from week N" marker in both views and in the exported calendar; download a coach's ZIP, unzip it, and confirm one `.ics` per meeting, each with a single VEVENT whose start and end match the appointments export; confirm a coach with no meetings cannot export; tests.html all green.
 
+> **Superseded by Session 11.** The ZIP of per-meeting files described here was replaced by a single `.ics` per coach. Building from scratch today, do Session 10 without `js/zip.js` and follow Session 11 for the export shape.
+
+
+### Session 11 — One calendar file per coach (v1.6)
+
+Run after Session 10. Replace `SPEC.md` with the v1.6 version before starting.
+
+**Prompt:**
+
+> Read SPEC.md §7.4 and §15, plus §14 and §7.1 for context. Replace the coach calendar export: instead of one `.ics` per meeting bundled in a `.zip`, produce a **single `.ics` file per coach** holding one `VEVENT` per scheduled meeting, in chronological order, so a coach imports one file and their whole term appears in Outlook. In `js/ics.js` replace `buildMeetingIcs`/`icsFileNameForMeeting` with `meetingEventLines(appointment, options)` and `buildCalendarIcs(appointments, options)` — one `VCALENDAR` (`VERSION`, `PRODID`, `CALSCALE`, `METHOD:PUBLISH`, `X-WR-CALNAME` naming the coach, `X-WR-TIMEZONE` carrying the campus zone) wrapping every event, one shared `DTSTAMP`, unchanged per-event properties, CRLF, 75-octet folding, TEXT escaping and the same deterministic UIDs so a re-import updates rather than duplicates. In `js/exporter.js` replace `buildCoachCalendarFiles`/`buildCoachCalendarZip` with `buildCoachCalendar(appointments, coach, options)` returning `{content, filename, meetings}`, name the download `<coach-name>_calendar_YYYY-MM-DD_HHMM.ics`, and send it to the browser as `text/calendar`. Delete `js/zip.js` — nothing else uses it. Relabel the Bookings button **Export coach calendar (.ics)** and update its accessible name and panel note to describe one file holding every meeting. Recalculate nothing: the instants still come from the §7.1 appointment rows. Update the §15 tests and keep the existing tests green. Update SPEC.md, README.md, and BUILD_GUIDE.md. Commit and push.
+
+**Verify:** pick a coach with meetings, download the file, and confirm it is a single `.ics` whose event count equals that coach's meeting count, in date order, with no other coach's meetings in it; import it into Outlook and confirm every meeting appears at the right campus-local time either side of the clock change; import it a second time and confirm entries are updated rather than duplicated; confirm a coach with no meetings cannot export; tests.html all green.
+
 ---
 
 ## Part D — Ongoing use and future changes

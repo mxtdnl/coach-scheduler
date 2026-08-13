@@ -1,8 +1,9 @@
 // iCalendar (RFC 5545) serialiser for the coach calendar export (SPEC.md §7.4).
 //
-// One .ics file per scheduled coaching meeting, each holding exactly one
-// VEVENT. Everything here is pure and DOM-free, so tests.html can assert on
-// the exact bytes that end up inside the ZIP.
+// One .ics file per coach, holding one VEVENT per scheduled meeting, so the
+// coach opens a single file and their whole term lands in Outlook at once.
+// Everything here is pure and DOM-free, so tests.html can assert on the exact
+// text that is downloaded.
 //
 // Times are never recalculated here. Every appointment already carries the
 // campus-aware, offset-bearing instants the export uses
@@ -107,8 +108,8 @@ export function icsUtcStampFromDate(date) {
  * A name reduced to the characters that are safe and readable in a file name
  * or a UID. Accented letters are kept as-is only when they survive the filter;
  * everything else collapses to a hyphen, so two different names can still
- * collide — which is why file names are de-duplicated (zip.js) and UIDs carry
- * the meeting's own date, time and number.
+ * collide — which is why UIDs carry the meeting's own date, time and number as
+ * well as the name.
  */
 export function slugify(value, fallback = 'unknown') {
   const slug = String(value ?? '')
@@ -158,16 +159,51 @@ export function meetingDescription(appointment, options = {}) {
 }
 
 /**
- * One meeting as a complete .ics file: a VCALENDAR containing exactly one
- * VEVENT.
+ * One meeting as the content lines of a single VEVENT, without the surrounding
+ * VCALENDAR. Kept separate from the calendar so that the file's one wrapper is
+ * written once, however many meetings it holds.
  *
  * @param {object} appointment a row from the final schedule (SPEC.md §7.1)
- * @param {{campusLabel?:string, timeZone?:string, dtstamp?:Date, prodId?:string}} [options]
+ * @param {{campusLabel?:string, timeZone?:string, dtstamp?:string}} [options]
+ * @returns {Array<string>} the event's unfolded content lines
+ */
+export function meetingEventLines(appointment, options = {}) {
+  if (!appointment) throw new Error('There is no meeting to turn into a calendar event.');
+
+  const lines = [
+    'BEGIN:VEVENT',
+    `UID:${escapeIcsText(meetingUid(appointment))}`,
+    `DTSTAMP:${options.dtstamp || icsUtcStampFromDate()}`,
+    `DTSTART:${icsUtcStamp(appointment.startDateTime)}`,
+    `DTEND:${icsUtcStamp(appointment.endDateTime)}`,
+    `SUMMARY:${escapeIcsText(meetingSummary(appointment))}`,
+    `DESCRIPTION:${escapeIcsText(meetingDescription(appointment, options))}`,
+  ];
+  if (options.campusLabel) lines.push(`LOCATION:${escapeIcsText(options.campusLabel)}`);
+  lines.push('STATUS:CONFIRMED', 'TRANSP:OPAQUE', 'END:VEVENT');
+  return lines;
+}
+
+/**
+ * A coach's whole term as one .ics file: a single VCALENDAR containing one
+ * VEVENT per meeting, in the order given.
+ *
+ * One file, not one per meeting, is the point of the export (SPEC.md §7.4): a
+ * coach imports it once and every meeting appears in Outlook. Every event
+ * carries its own deterministic UID, so a second import of the same schedule
+ * updates the same entries instead of duplicating them.
+ *
+ * @param {Array<object>} appointments the meetings to write, already filtered and sorted
+ * @param {{campusLabel?:string, timeZone?:string, calendarName?:string, dtstamp?:Date, prodId?:string}} [options]
  * @returns {string} the file's text, CRLF-terminated throughout
  */
-export function buildMeetingIcs(appointment, options = {}) {
-  if (!appointment) throw new Error('There is no meeting to turn into a calendar file.');
+export function buildCalendarIcs(appointments, options = {}) {
+  const meetings = (appointments || []).filter(Boolean);
+  if (meetings.length === 0) {
+    throw new Error('There are no meetings to put in a calendar file.');
+  }
 
+  // One generation time for the whole file, so every event in it agrees.
   const dtstamp = icsUtcStampFromDate(options.dtstamp);
   const lines = [
     'BEGIN:VCALENDAR',
@@ -176,36 +212,17 @@ export function buildMeetingIcs(appointment, options = {}) {
     'CALSCALE:GREGORIAN',
     'METHOD:PUBLISH',
   ];
+  // Names the calendar in clients that read it, so an import is recognisable
+  // as this coach's meetings rather than an untitled block of events.
+  if (options.calendarName) lines.push(`X-WR-CALNAME:${escapeIcsText(options.calendarName)}`);
   // The campus zone (SPEC.md §6.1) travels with the file, so a client shows
-  // the meeting in campus local time even though the instants are in UTC.
+  // the meetings in campus local time even though the instants are in UTC.
   if (options.timeZone) lines.push(`X-WR-TIMEZONE:${escapeIcsText(options.timeZone)}`);
-  lines.push(
-    'BEGIN:VEVENT',
-    `UID:${escapeIcsText(meetingUid(appointment))}`,
-    `DTSTAMP:${dtstamp}`,
-    `DTSTART:${icsUtcStamp(appointment.startDateTime)}`,
-    `DTEND:${icsUtcStamp(appointment.endDateTime)}`,
-    `SUMMARY:${escapeIcsText(meetingSummary(appointment))}`,
-    `DESCRIPTION:${escapeIcsText(meetingDescription(appointment, options))}`
-  );
-  if (options.campusLabel) lines.push(`LOCATION:${escapeIcsText(options.campusLabel)}`);
-  lines.push('STATUS:CONFIRMED', 'TRANSP:OPAQUE', 'END:VEVENT', 'END:VCALENDAR');
+
+  meetings.forEach((meeting) => lines.push(...meetingEventLines(meeting, { ...options, dtstamp })));
+  lines.push('END:VCALENDAR');
 
   return serialiseIcsLines(lines);
-}
-
-/**
- * The file name for one meeting's .ics: date, start time and student, so the
- * files sort chronologically inside the archive and are readable on sight.
- * Deterministic — the same meeting always produces the same name. Collisions
- * are resolved when the archive is built (zip.js `dedupeEntryNames`).
- */
-export function icsFileNameForMeeting(appointment) {
-  const date = String(appointment?.date || '').replace(/[^0-9-]/g, '') || 'undated';
-  const time = String(appointment?.startTime || '').replace(':', '') || '0000';
-  const student = slugify(appointment?.studentName, 'student');
-  const meeting = Number(appointment?.meetingNumber) || 0;
-  return `${date}_${time}_${student}_meeting-${meeting}.ics`;
 }
 
 /**

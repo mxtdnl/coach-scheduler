@@ -8,8 +8,7 @@
 // can re-include it later without re-entering a header/value.
 
 import { getXLSX } from './xlsx-loader.js';
-import { buildMeetingIcs, icsFileNameForMeeting, isExportableMeeting, slugify } from './ics.js';
-import { buildZip, sanitiseZipEntryName, dedupeEntryNames } from './zip.js';
+import { buildCalendarIcs, isExportableMeeting, slugify } from './ics.js';
 
 /**
  * The §7.1 default columns, in export order. Everything here is included by
@@ -420,12 +419,15 @@ export function exportCoachAssignments(assignments, mode = 'auto') {
   return filename;
 }
 
-// ---- SPEC.md §7.4 — coach calendar export (one .ics per meeting, in a .zip) ----
+// ---- SPEC.md §7.4 — coach calendar export (one .ics holding every meeting) ----
 //
 // A read-only view of the finished schedule in calendar form. It reads the
 // same appointment rows the §7.1 export writes, so a coach's diary and the
 // spreadsheet can never disagree, and it adds nothing to the schedule: a
-// meeting that is not in `appointments` is not in the archive.
+// meeting that is not in `appointments` is not in the file.
+//
+// One file per coach, not one per meeting: the coach opens or imports a single
+// download and their whole term appears in Outlook.
 
 /** Every exportable meeting belonging to one coach, in the schedule's own order. */
 export function coachMeetings(appointments, coachName) {
@@ -433,9 +435,10 @@ export function coachMeetings(appointments, coachName) {
 }
 
 /**
- * `<coach-name>_calendar_YYYY-MM-DD_HHMM.zip` (SPEC.md §7.4), matching the
+ * `<coach-name>_calendar_YYYY-MM-DD_HHMM.ics` (SPEC.md §7.4), matching the
  * §7.1/§7.3 timestamp convention. The coach's name is slugified, so a name
- * with punctuation, spaces or accents cannot produce an awkward download.
+ * with punctuation, spaces or accents cannot produce an awkward or unsafe
+ * download name.
  */
 export function buildCoachCalendarFilename(coachName, now = new Date()) {
   const y = now.getFullYear();
@@ -443,7 +446,7 @@ export function buildCoachCalendarFilename(coachName, now = new Date()) {
   const d = pad2(now.getDate());
   const hh = pad2(now.getHours());
   const mm = pad2(now.getMinutes());
-  return `${slugify(coachName, 'coach')}_calendar_${y}-${m}-${d}_${hh}${mm}.zip`;
+  return `${slugify(coachName, 'coach')}_calendar_${y}-${m}-${d}_${hh}${mm}.ics`;
 }
 
 /**
@@ -464,57 +467,37 @@ export function exportableCoachMeetings(appointments, coachName) {
 }
 
 /**
- * One .ics file per scheduled meeting for the selected coach (SPEC.md §7.4),
- * in chronological order, with file names made unique and safe as ZIP entry
- * names. Pure: no DOM, no download, no mutation of the appointment rows.
+ * The selected coach's whole term as one .ics file (SPEC.md §7.4): a single
+ * VCALENDAR with one VEVENT per meeting, in chronological order, ready to be
+ * saved. Pure — no DOM, no download, no mutation of the appointment rows — so
+ * tests can assert on the exact text that is downloaded.
+ *
+ * Refuses a coach with no exportable meeting rather than handing over an empty
+ * calendar, which imports as nothing at all.
  *
  * @param {Array<object>} appointments the final schedule
  * @param {string} coachName the selected coach
- * @param {{campusLabel?:string, timeZone?:string, dtstamp?:Date}} [options]
- * @returns {Array<{name:string, content:string, appointment:object}>}
+ * @param {{campusLabel?:string, timeZone?:string, dtstamp?:Date, now?:Date}} [options]
+ * @returns {{content:string, filename:string, meetings:Array<object>}}
  */
-export function buildCoachCalendarFiles(appointments, coachName, options = {}) {
-  const meetings = exportableCoachMeetings(appointments, coachName);
-
-  const names = dedupeEntryNames(
-    meetings.map((meeting) => sanitiseZipEntryName(icsFileNameForMeeting(meeting), 'meeting.ics'))
-  );
-
-  return meetings.map((meeting, i) => ({
-    name: names[i],
-    content: buildMeetingIcs(meeting, options),
-    appointment: meeting,
-  }));
-}
-
-/**
- * The coach's calendar archive as bytes, without writing it — so tests can
- * open the real ZIP. Refuses a coach with no meetings rather than producing an
- * empty or invalid archive (SPEC.md §7.4).
- *
- * @returns {{bytes:Uint8Array, files:Array<{name:string, content:string}>, filename:string}}
- */
-export function buildCoachCalendarZip(appointments, coachName, options = {}) {
+export function buildCoachCalendar(appointments, coachName, options = {}) {
   if (!coachName) {
     throw new Error('Choose a coach before exporting a calendar.');
   }
-  const files = buildCoachCalendarFiles(appointments, coachName, options);
-  if (files.length === 0) {
+  const meetings = exportableCoachMeetings(appointments, coachName);
+  if (meetings.length === 0) {
     throw new Error(`${coachName} has no scheduled meetings, so there is nothing to export.`);
   }
   const now = options.now instanceof Date ? options.now : new Date();
   return {
-    bytes: buildZip(
-      files.map((file) => ({ name: file.name, data: file.content })),
-      { date: now }
-    ),
-    files,
+    content: buildCalendarIcs(meetings, { calendarName: `${coachName} — coaching meetings`, ...options }),
     filename: buildCoachCalendarFilename(coachName, now),
+    meetings,
   };
 }
 
 /**
- * Hands the browser a generated file to save. Used by the ZIP export; the
+ * Hands the browser a generated file to save. Used by the calendar export; the
  * Excel exports go through SheetJS's own writeFile, which does the same thing
  * internally.
  */
@@ -533,11 +516,14 @@ function downloadBytes(bytes, filename, mimeType) {
 }
 
 /**
- * Generates the selected coach's calendar archive and triggers the download
+ * Generates the selected coach's calendar file and triggers the download
  * (SPEC.md §7.4). Returns the filename used.
+ *
+ * The file is written as UTF-8 text under the `text/calendar` type, which is
+ * what makes a browser hand it to Outlook rather than open it as a document.
  */
 export function exportCoachCalendar(appointments, coachName, options = {}) {
-  const { bytes, filename } = buildCoachCalendarZip(appointments, coachName, options);
-  downloadBytes(bytes, filename, 'application/zip');
+  const { content, filename } = buildCoachCalendar(appointments, coachName, options);
+  downloadBytes(new TextEncoder().encode(content), filename, 'text/calendar;charset=utf-8');
   return filename;
 }

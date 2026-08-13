@@ -15,8 +15,8 @@ meetings only ever have to dodge their own block's classes — see
 Once the schedule exists you can read it back from either side on the Results
 step: pick a coach to see the students they are meeting and when, or pick a
 student to see their classes, their coaching meetings and who their coach is.
-A selected coach's meetings can also be downloaded as calendar files — see
-[section 7.4](#74-the-coach-calendar-download-zip-of-ics-files).
+A selected coach's whole term can also be downloaded as one calendar file — see
+[section 7.4](#74-the-coach-calendar-download-one-ics-file).
 
 Everything happens inside your web browser. Your spreadsheets are read on your
 own computer and are never sent anywhere. Closing the tab throws the data away.
@@ -58,12 +58,12 @@ too, the coach assignments batch upload: one row per student saying which coach
 they ended up with ([section 7](#7-the-export-files)).
 
 You can also look the finished schedule up meeting by meeting — by coach or by
-student — and download one coach's meetings as calendar files
+student — and download one coach's whole term as a single calendar file
 ([section 4](#bookings-look-the-schedule-up-by-coach-or-by-student)).
 
 What it does **not** do: it does not send invitations, book rooms, email
 anybody, or know about public holidays. It is a planner, not a calendar — the
-calendar files it writes are files you import yourself.
+calendar file it writes is a file you import yourself.
 
 ---
 
@@ -442,13 +442,13 @@ Changing an FTE updates the quotas and the whole schedule straight away.
 ## 7. The export files
 
 A run gives you **one or two** spreadsheets, depending on the mode, plus a
-per-coach calendar archive whenever you want one:
+per-coach calendar file whenever you want one:
 
 | File | When | What is in it |
 |---|---|---|
 | `appointments_2026-09-01_1430.xlsx` | always | One row per **meeting** — four rows per scheduled student |
 | `coach_assignments_2026-09-01_1430.xlsx` | auto-assign only | One row per **student**, naming the coach they were assigned |
-| `ada-lovelace_calendar_2026-09-01_1430.zip` | when you ask for it, per coach | One `.ics` calendar file per **meeting** for that one coach |
+| `ada-lovelace_calendar_2026-09-01_1430.ics` | when you ask for it, per coach | One calendar file holding **every meeting** that one coach has |
 
 They are separate downloads with separate buttons; none replaces the other.
 
@@ -528,25 +528,25 @@ layout is remembered for next time. These settings apply to the **appointments**
 file only — the coach assignments file keeps its seven fixed columns whatever
 you do here.
 
-### 7.4 The coach calendar download (.zip of .ics files)
+### 7.4 The coach calendar download (one .ics file)
 
 In the **Bookings** card, with **By coach** selected and a coach chosen, press
-**Export coach calendar (.zip)**. It downloads
-`ada-lovelace_calendar_2026-09-01_1430.zip` — the coach's name, then the date
+**Export coach calendar (.ics)**. It downloads
+`ada-lovelace_calendar_2026-09-01_1430.ics` — the coach's name, then the date
 and time you generated it.
 
-**What is in the ZIP.** One `.ics` calendar file for **every meeting that coach
-actually has** in the generated schedule — a coach with 20 meetings gets 20
-files, not one file with 20 events. Each file is named for the meeting it
-holds, so they sort by date:
+**One file, all their meetings.** The download is a single calendar file
+holding **every meeting that coach actually has** in the generated schedule: a
+coach with 60 meetings gets one file with 60 events in it, in date order. The
+coach opens or imports that one file and their whole term appears in their
+calendar — nothing to unzip, and no adding meetings one at a time.
 
-```
-2026-09-07_0900_jane-doe_meeting-1.ics
-2026-09-07_0930_tom-baker_meeting-1.ics
-2026-09-09_1300_amara-okafor_meeting-1.ics
-```
+**Putting it in Outlook.** Double-click the file and let Outlook add the
+events, or use **File → Open & Export → Import/Export → Import an iCalendar
+(.ics) file**. In Outlook on the web it is **Calendar → Add calendar → Upload
+from file**. Google Calendar and Apple Calendar read the same file.
 
-Open one and you get a single calendar event with:
+Each event in it has:
 
 - **Title** — the student's name and which of the four meetings it is, e.g.
   `Jane Doe — Coaching 1 - Meeting 2`.
@@ -559,14 +559,13 @@ Open one and you get a single calendar event with:
   the coach, the term week, and a note if the meeting was moved out of a
   blocked week.
 
-You can drag the files into Outlook, Google Calendar, Apple Calendar or
-anything else that reads `.ics`. Re-exporting the same schedule produces the
-same files with the same identifiers, so importing again updates the entries
-rather than creating a second copy of each.
+Re-exporting the same schedule produces the same file with the same event
+identifiers, so importing again updates the entries rather than creating a
+second copy of each.
 
 A few things worth knowing:
 
-- **Only the selected coach.** Nobody else's meetings are in the archive.
+- **Only the selected coach.** Nobody else's meetings are in the file.
 - **Only real meetings.** Unassigned students contribute nothing, and a meeting
   that had to be dropped because of a blocked week is not in the file either —
   because it is not in the schedule. A meeting that was *moved* appears once,
@@ -705,8 +704,8 @@ These appear as a banner at the top of the page and can be dismissed.
 | **There is nothing to export: no student was assigned a coach.** | You pressed *Export coach assignments* on a run where nobody was scheduled. | Check the Unassigned students table for the reason. |
 | **The coach assignments export needs a Coach SF ID for every assigned coach.** | A coach in the schedule has no Coach SF ID, so their Coach User ID would be blank. | The message names the coach. Put their Coach SF ID in the coach availability file and upload it again. |
 | **The coach assignments export is only available in auto-assign mode.** | The second export does not apply in pre-allocated mode, where you supplied the pairings yourself. | Nothing to do — the appointments export still works as usual. |
-| **Choose a coach before exporting a calendar.** | You pressed *Export coach calendar (.zip)* with no coach chosen in the Bookings card. | Pick a coach from the list; the button stays greyed out until you do. |
-| **&lt;Coach&gt; has no scheduled meetings, so there is nothing to export.** | The coach you chose ended up with no meetings, so there would be nothing to put in the ZIP. | Choose a coach who has meetings, or check the Unassigned students table to see why this one has none. |
+| **Choose a coach before exporting a calendar.** | You pressed *Export coach calendar (.ics)* with no coach chosen in the Bookings card. | Pick a coach from the list; the button stays greyed out until you do. |
+| **&lt;Coach&gt; has no scheduled meetings, so there is nothing to export.** | The coach you chose ended up with no meetings, so the calendar file would be empty. | Choose a coach who has meetings, or check the Unassigned students table to see why this one has none. |
 | **All columns are excluded. Include at least one in Export settings.** | Every export column has been unticked, so there is nothing to write. This one appears in the Appointments table, and the Export button is greyed out until you fix it. | Tick at least one column, or press *Reset to defaults*. |
 | **This setting could not be saved for next time…** | The browser is refusing to store settings — usually private browsing, or storage turned off. | Nothing is broken; the tool works normally, it just will not remember your settings after a reload. |
 | **Saved settings could not be read…** / **The saved export layout could not be read…** | Stored settings were unreadable, so defaults were used. | Nothing to do. *Start over* with *Also clear saved settings* ticked removes the leftovers for good. |
@@ -722,7 +721,7 @@ per-student coaching availability, more than one campus per run, public
 holidays, and editing individual appointments after they are generated. The
 Results step lets you *inspect* the schedule meeting by meeting
 ([section 4](#bookings-look-the-schedule-up-by-coach-or-by-student)) and export
-a coach's meetings as calendar files, but it never edits one.
+a coach's meetings as a calendar file, but it never edits one.
 
 ---
 
