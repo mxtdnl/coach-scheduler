@@ -35,6 +35,8 @@
 import {
   buildSlots,
   buildClassBlocks,
+  blockedWeekLookup,
+  sortAppointments,
   classBlockKey,
   slotAllowsClassBlock,
   slotsForClassBlock,
@@ -80,6 +82,19 @@ import {
   exportableCoachMeetings,
 } from './js/exporter.js';
 import { bookingCoaches, buildCoachBookings, buildStudentTimeline, filterStudents } from './js/bookings.js';
+import {
+  buildEditedSchedule,
+  buildCoachGrid,
+  placementsFromAssignments,
+  freeOffsetsIn,
+  validateMove,
+  validateSwap,
+  validatePosition,
+  replayEdits,
+  describeEdit,
+  EDIT_REFUSALS,
+  EDIT_WARNINGS,
+} from './js/edits.js';
 import {
   escapeIcsText,
   foldIcsLine,
@@ -2347,6 +2362,689 @@ test('the §7.1 appointments export is unaffected by the calendar export', () =>
   assertEqual(columns[0].header, 'Student Name', 'the default columns are unchanged');
   assertEqual(rows.length, 5, 'and still preview the appointments');
   assert(buildExportFilename(new Date(2026, 7, 12, 14, 30)).startsWith('appointments_'), 'as is its filename');
+});
+
+
+// ---- SPEC.md §17 — manual editing, and §18 its tests ----
+
+group('§17 — editing fixture');
+
+// Two cohorts whose classes sit on different days, so a slot one of them
+// cannot use is still on offer to the other (§4.4a) — which is what makes the
+// class-clash refusal worth testing rather than tautological.
+const ED_CLASSES = [
+  { classBlock: 'Block A', day: 'Monday', start: t('10:00'), end: t('11:00'), className: 'Maths' },
+  { classBlock: 'Block B', day: 'Tuesday', start: t('10:00'), end: t('11:00'), className: 'Chemistry' },
+];
+const ED_BLOCKS = buildClassBlocks(ED_CLASSES);
+const ED_AVAILABILITY = [
+  avail('Coach A', 'Monday', '09:00', '12:00', 'C-A', 'a@example.com'),
+  avail('Coach A', 'Wednesday', '09:00', '11:00', 'C-A', 'a@example.com'),
+  avail('Coach B', 'Tuesday', '09:00', '12:00', 'C-B', 'b@example.com'),
+  avail('Coach C', 'Thursday', '09:00', '10:00', 'C-C', 'c@example.com'),
+];
+const ED_SLOTS = buildSlots(ED_AVAILABILITY, ED_BLOCKS);
+const ED_COACHES = ['Coach A', 'Coach B', 'Coach C'];
+const ED_STUDENTS = [
+  { contactSfId: 'E1', studentName: 'Ann Adams', studentEmail: 'ann@example.com', classBlock: 'Block A' },
+  { contactSfId: 'E2', studentName: 'Ben Brook', studentEmail: 'ben@example.com', classBlock: 'Block A' },
+  { contactSfId: 'E3', studentName: 'Cal Chase', studentEmail: 'cal@example.com', classBlock: 'Block A' },
+  { contactSfId: 'E4', studentName: 'Dee Doyle', studentEmail: 'dee@example.com', classBlock: 'Block B' },
+  { contactSfId: 'E5', studentName: 'Eli Evans', studentEmail: 'eli@example.com', classBlock: 'Block A' },
+];
+// Set by hand so the fixture states what it is testing: Coach C takes nobody,
+// and Eli has no room at all.
+const ED_QUOTAS = { 'Coach A': 2, 'Coach B': 2, 'Coach C': 0 };
+
+function editRun(options = {}) {
+  const { assignments, unassigned } = schedule(ED_STUDENTS, ED_SLOTS, 'auto', options.quotas || ED_QUOTAS, ED_COACHES, {
+    classBlocks: ED_BLOCKS,
+  });
+  const expanded = expandToAppointments(assignments, START_MONDAY, LONDON);
+  const blocked = applyBlocks(expanded, options.blocks || [], ED_SLOTS, {
+    timeZone: LONDON,
+    startMonday: START_MONDAY,
+  });
+  return { assignments, unassigned, appointments: blocked.appointments, exceptions: blocked.exceptions };
+}
+
+function editContext(options = {}) {
+  return {
+    slots: ED_SLOTS,
+    classBlocks: ED_BLOCKS,
+    blocks: options.blocks || [],
+    quotas: options.quotas || ED_QUOTAS,
+    mode: options.mode || 'auto',
+    startMonday: START_MONDAY,
+    timeZone: LONDON,
+    students: ED_STUDENTS,
+  };
+}
+
+const ED = editRun();
+const ED_CTX = editContext();
+const ED_PLACEMENTS = placementsFromAssignments(ED.assignments);
+
+const edSlot = (coach, day, time) => ED_SLOTS.find((s) => s.coach === coach && s.day === day && s.start === t(time));
+const edStudent = (id) => ED_STUDENTS.find((s) => s.contactSfId === id);
+const apptsFor = (appointments, id) => appointments.filter((row) => row.contactSfId === id);
+const placementOf = (placements, id) => placements.find((p) => p.student.contactSfId === id);
+const positionLabel = (placements, id) => {
+  const p = placementOf(placements, id);
+  return p ? `${p.coach}/${p.slot.day}/${minutesToTime(p.slot.start)}/${p.offset}` : 'unassigned';
+};
+/** Every placement as one string, so a whole schedule can be compared at once. */
+const shapeOf = (placements) =>
+  placements.map((p) => `${p.student.contactSfId}:${p.coach}/${p.slot.day}/${minutesToTime(p.slot.start)}/${p.offset}`).join(' ');
+
+/** Commits a move the way app.js does: validate, then keep the edit it returns. */
+function move(context, placements, request) {
+  const result = validateMove(context, placements, request);
+  return result;
+}
+
+test('the fixture places four students and leaves one with nowhere to go', () => {
+  assertEqual(ED.assignments.length, 4, 'four students were assigned');
+  assertDeep(
+    ED.unassigned.map((u) => `${u.student.contactSfId}:${u.reason}`),
+    [`E5:${REASONS.INSUFFICIENT_CAPACITY}`],
+    'Eli is the only unassigned student, with the scheduler’s own reason'
+  );
+  assertEqual(ED.appointments.length, 16, 'four meetings each');
+  assertEqual(ED.appointments.filter((r) => r.coachName === 'Coach C').length, 0, 'Coach C has nobody');
+});
+
+group('§18.1 — a move takes all four meetings with it');
+
+test('a move rewrites all four meetings, and the new offset decides the weeks', () => {
+  const from = placementOf(ED_PLACEMENTS, 'E1');
+  const result = move(ED_CTX, ED_PLACEMENTS, { contactSfId: 'E1', coach: 'Coach B', day: 'Tuesday', start: t('11:00') });
+  assert(result.ok, `the move was refused: ${result.refusal && result.refusal.message}`);
+  assertEqual(result.offset, 1, 'the first free offset in the target cell');
+  assertDeep(result.weeks, [1, 5, 9, 13], 'and the weeks that offset produces');
+
+  const edited = buildEditedSchedule(ED, [result.edit], ED_CTX);
+  const rows = apptsFor(edited.appointments, 'E1');
+  assertEqual(rows.length, 4, 'still exactly four meetings');
+  assert(rows.every((row) => row.coachName === 'Coach B'), 'every one is with the new coach');
+  assert(rows.every((row) => row.day === 'Tuesday' && row.startTime === '11:00'), 'and on the new day and time');
+  assertDeep(rows.map((r) => r.weekNumber).sort((a, b) => a - b), [1, 5, 9, 13], 'the new offset’s weeks');
+  assertDeep(rows.map((r) => r.meetingNumber).sort(), [1, 2, 3, 4], 'meetings 1–4, one per term block');
+  assert(rows.every((row) => row.coachSfId === 'C-B' && row.coachEmail === 'b@example.com'), 'the new coach’s details travel with them');
+  assertEqual(from.coach, 'Coach A', 'and they really did start somewhere else');
+  assertEqual(apptsFor(edited.appointments, 'E1').length + apptsFor(edited.appointments, 'E2').length, 8, 'nobody lost a meeting');
+});
+
+test('a move changes the offset, and with it the meeting weeks (§17.2)', () => {
+  // Coach B, Tuesday 09:00 already holds offsets 1 and 2, so the mover takes 3.
+  const result = move(ED_CTX, ED_PLACEMENTS, { contactSfId: 'E1', coach: 'Coach B', day: 'Tuesday', start: t('09:00') });
+  assert(result.ok, `refused: ${result.refusal && result.refusal.message}`);
+  assertEqual(result.offset, 3, 'the first free offset is 3');
+  assertDeep(result.weeks, [3, 7, 11, 15], 'so their meetings move to weeks 3, 7, 11 and 15');
+  const edited = buildEditedSchedule(ED, [result.edit], ED_CTX);
+  assertDeep(apptsFor(edited.appointments, 'E1').map((r) => r.weekNumber).sort((a, b) => a - b), [3, 7, 11, 15]);
+});
+
+test('the grid offers the same offset the move takes (§17.2: shown before committing)', () => {
+  const grid = buildCoachGrid(ED_CTX, ED_PLACEMENTS, 'Coach B');
+  const row = grid.rows.find((r) => r.startTime === '09:00');
+  const cell = row.cells[grid.days.indexOf('Tuesday')];
+  assertDeep(cell.positions.map((p) => (p.free ? 'free' : p.student.contactSfId)), ['E3', 'E4', 'free']);
+  assertDeep(cell.positions[2].weeks, [3, 7, 11, 15], 'the free position states the weeks it would give');
+  assertDeep(freeOffsetsIn(ED_PLACEMENTS, edSlot('Coach B', 'Tuesday', '09:00')), [3], 'and it is the only one free');
+});
+
+test('the grid marks cells outside availability and names the blocks a cell clashes with', () => {
+  const grid = buildCoachGrid(ED_CTX, ED_PLACEMENTS, 'Coach A');
+  assertDeep(grid.days, ['Monday', 'Wednesday'], 'only the days this coach works');
+  const wednesdayAt1030 = grid.rows.find((r) => r.startTime === '10:30').cells[grid.days.indexOf('Wednesday')];
+  assertEqual(wednesdayAt1030.available, false, 'Coach A’s Wednesday ends before 10:30');
+  const mondayAt10 = grid.rows.find((r) => r.startTime === '10:00').cells[grid.days.indexOf('Monday')];
+  assertEqual(mondayAt10.available, true, 'the slot exists');
+  assertDeep(mondayAt10.clashes, ['Block A'], 'and it names the cohort whose class covers it');
+});
+
+group('§18.2 — every hard refusal, separately');
+
+test('refused: the target slot overlaps a class in the student’s own block (§17.4)', () => {
+  const result = move(ED_CTX, ED_PLACEMENTS, { contactSfId: 'E1', coach: 'Coach A', day: 'Monday', start: t('10:00') });
+  assertEqual(result.ok, false, 'the move is blocked');
+  assertEqual(result.refusal.code, EDIT_REFUSALS.CLASS_CLASH);
+  assert(result.refusal.message.includes('Block A'), `the message names the block: ${result.refusal.message}`);
+  assert(result.refusal.message.includes('Maths'), `and the class: ${result.refusal.message}`);
+  assertEqual(result.edit, null, 'nothing is recorded');
+  assertEqual(shapeOf(buildEditedSchedule(ED, [], ED_CTX).placements), shapeOf(ED_PLACEMENTS), 'and nothing moved');
+});
+
+test('the same slot is still offered to a cohort that can use it (§4.4a)', () => {
+  const result = move(ED_CTX, ED_PLACEMENTS, { contactSfId: 'E4', coach: 'Coach A', day: 'Monday', start: t('10:00') });
+  assert(result.ok, `Block B has no Monday class, so this must be allowed: ${result.refusal && result.refusal.message}`);
+});
+
+test('refused: no free offset in the target cell (§17.4)', () => {
+  const slot = edSlot('Coach B', 'Tuesday', '09:00');
+  const full = [
+    { student: edStudent('E1'), coach: 'Coach B', slot, offset: 1 },
+    { student: edStudent('E2'), coach: 'Coach B', slot, offset: 2 },
+    { student: edStudent('E3'), coach: 'Coach B', slot, offset: 3 },
+  ];
+  const result = move(ED_CTX, full, { contactSfId: 'E4', student: edStudent('E4'), coach: 'Coach B', day: 'Tuesday', start: t('09:00') });
+  assertEqual(result.ok, false);
+  assertEqual(result.refusal.code, EDIT_REFUSALS.SLOT_FULL);
+  assert(result.refusal.message.includes('three students'), result.refusal.message);
+  assertEqual(result.edit, null);
+});
+
+test('refused: it would double-book the coach (§17.4)', () => {
+  const result = move(ED_CTX, ED_PLACEMENTS, {
+    contactSfId: 'E1',
+    coach: 'Coach B',
+    day: 'Tuesday',
+    start: t('09:00'),
+    offset: 1, // already Cal's
+  });
+  assertEqual(result.ok, false);
+  assertEqual(result.refusal.code, EDIT_REFUSALS.DOUBLE_BOOKED);
+  assert(result.refusal.message.includes('Cal Chase'), `the message names the occupant: ${result.refusal.message}`);
+
+  // The same check, reached the way a swap and the replay reach it.
+  const direct = validatePosition(ED_CTX, ED_PLACEMENTS, {
+    student: edStudent('E1'),
+    slot: edSlot('Coach B', 'Tuesday', '09:00'),
+    offset: 2,
+  });
+  assertEqual(direct.code, EDIT_REFUSALS.DOUBLE_BOOKED, 'offset 2 is Dee’s');
+});
+
+test('refused: any of the four meetings falls on the coach’s blocked week (§17.4)', () => {
+  // Offset 1 at Coach B, Tuesday 11:00 means weeks 1, 5, 9 and 13 — so
+  // blocking any one of them must refuse the move, and one of the others
+  // must not.
+  [1, 5, 9, 13].forEach((week) => {
+    const blocks = [{ coach: 'Coach B', week }];
+    const result = move(editContext({ blocks }), placementsFromAssignments(editRun({ blocks }).assignments), {
+      contactSfId: 'E1',
+      coach: 'Coach B',
+      day: 'Tuesday',
+      start: t('11:00'),
+    });
+    assertEqual(result.ok, false, `week ${week} is blocked, so the move must be refused`);
+    assertEqual(result.refusal.code, EDIT_REFUSALS.BLOCKED_WEEK, `week ${week}`);
+    assert(result.refusal.message.includes(String(week)), `the message names week ${week}: ${result.refusal.message}`);
+    assert(
+      result.refusal.message.includes('not rebooked automatically'),
+      'and says no §11.3 rebooking was attempted'
+    );
+  });
+
+  const spare = [{ coach: 'Coach B', week: 2 }];
+  const allowed = move(editContext({ blocks: spare }), placementsFromAssignments(editRun({ blocks: spare }).assignments), {
+    contactSfId: 'E1',
+    coach: 'Coach B',
+    day: 'Tuesday',
+    start: t('11:00'),
+  });
+  assert(allowed.ok, 'week 2 holds none of offset 1’s meetings, so that move is fine');
+});
+
+test('refused: a blocked *date* on the target weekday, and not on another (§11.2)', () => {
+  const onDay = [{ coach: 'Coach B', week: 9, day: 'Tuesday' }];
+  const refusedResult = move(editContext({ blocks: onDay }), placementsFromAssignments(editRun({ blocks: onDay }).assignments), {
+    contactSfId: 'E1',
+    coach: 'Coach B',
+    day: 'Tuesday',
+    start: t('11:00'),
+  });
+  assertEqual(refusedResult.ok, false, 'the Tuesday of week 9 is blocked');
+  assertEqual(refusedResult.refusal.code, EDIT_REFUSALS.BLOCKED_WEEK);
+
+  const otherDay = [{ coach: 'Coach B', week: 9, day: 'Monday' }];
+  const allowed = move(editContext({ blocks: otherDay }), placementsFromAssignments(editRun({ blocks: otherDay }).assignments), {
+    contactSfId: 'E1',
+    coach: 'Coach B',
+    day: 'Tuesday',
+    start: t('11:00'),
+  });
+  assert(allowed.ok, 'a block on another weekday of that week does not touch a Tuesday meeting');
+});
+
+test('refused: a cell the coach does not work, and a student who is not in the run', () => {
+  const outside = move(ED_CTX, ED_PLACEMENTS, { contactSfId: 'E1', coach: 'Coach C', day: 'Friday', start: t('09:00') });
+  assertEqual(outside.refusal.code, EDIT_REFUSALS.UNKNOWN_SLOT);
+  const nobody = move(ED_CTX, ED_PLACEMENTS, { contactSfId: 'ZZ', coach: 'Coach C', day: 'Thursday', start: t('09:00') });
+  assertEqual(nobody.refusal.code, EDIT_REFUSALS.UNKNOWN_STUDENT);
+});
+
+group('§18.3 — a swap is refused whole or not at all');
+
+test('a swap that fails in one direction is refused whole, and neither student moves', () => {
+  // Dee (Block B) has no Monday class, so she can sit on Coach A's Monday
+  // 10:00. Ann (Block A) cannot — that hour is her Maths class.
+  const setup = move(ED_CTX, ED_PLACEMENTS, { contactSfId: 'E4', coach: 'Coach A', day: 'Monday', start: t('10:00') });
+  assert(setup.ok, 'the setup move is allowed');
+  const staged = buildEditedSchedule(ED, [setup.edit], ED_CTX);
+  const before = shapeOf(staged.placements);
+
+  const swap = validateSwap(ED_CTX, staged.placements, { contactSfId: 'E1', withContactSfId: 'E4' });
+  assertEqual(swap.ok, false, 'the swap is refused');
+  assertEqual(swap.refusal.code, EDIT_REFUSALS.CLASS_CLASH, 'because of the failing direction');
+  assert(swap.refusal.message.includes('refused whole'), swap.refusal.message);
+  assertEqual(swap.edit, null, 'and nothing is recorded');
+  assertEqual(shapeOf(buildEditedSchedule(ED, [setup.edit], ED_CTX).placements), before, 'neither student moved');
+});
+
+test('a swap both directions can take exchanges the two placements exactly', () => {
+  const before = ED_PLACEMENTS;
+  const annAt = positionLabel(before, 'E1');
+  const benAt = positionLabel(before, 'E2');
+  const swap = validateSwap(ED_CTX, before, { contactSfId: 'E1', withContactSfId: 'E2' });
+  assert(swap.ok, `refused: ${swap.refusal && swap.refusal.message}`);
+  const edited = buildEditedSchedule(ED, [swap.edit], ED_CTX);
+  assertEqual(positionLabel(edited.placements, 'E1'), benAt, 'Ann took Ben’s place');
+  assertEqual(positionLabel(edited.placements, 'E2'), annAt, 'and Ben took Ann’s');
+  assertEqual(apptsFor(edited.appointments, 'E1').length, 4, 'both still have four meetings');
+  assertEqual(apptsFor(edited.appointments, 'E2').length, 4);
+});
+
+test('an unassigned student cannot be swapped onto an occupied position (§17.3: no removal)', () => {
+  const swap = validateSwap(ED_CTX, ED_PLACEMENTS, { contactSfId: 'E5', withContactSfId: 'E1', student: edStudent('E5') });
+  assertEqual(swap.ok, false);
+  assertEqual(swap.refusal.code, EDIT_REFUSALS.NOT_PLACED);
+  assert(swap.refusal.message.includes('free position'), swap.refusal.message);
+});
+
+group('§18.4 — soft warnings');
+
+test('a quota breach is allowed, warns, and the warning sticks to the edit (§17.6)', () => {
+  const result = move(ED_CTX, ED_PLACEMENTS, { contactSfId: 'E1', coach: 'Coach B', day: 'Tuesday', start: t('11:00') });
+  assert(result.ok, 'the edit goes ahead');
+  const quota = result.warnings.find((w) => w.code === EDIT_WARNINGS.QUOTA);
+  assert(quota, `a quota warning was expected, got ${JSON.stringify(result.warnings)}`);
+  assert(quota.message.includes('3 students'), quota.message);
+  assert(quota.message.includes('quota of 2'), quota.message);
+  assertDeep(result.edit.warnings, result.warnings, 'and it is carried on the edit for the edits list');
+
+  const edited = buildEditedSchedule(ED, [result.edit], ED_CTX);
+  assertEqual(edited.assignments.filter((a) => a.coach === 'Coach B').length, 3, 'the coach really did take a third student');
+});
+
+test('a day-balance breach warns (§4.7), and a balanced move does not', () => {
+  const piled = move(ED_CTX, ED_PLACEMENTS, { contactSfId: 'E2', coach: 'Coach A', day: 'Monday', start: t('09:00') });
+  assert(piled.ok, `refused: ${piled.refusal && piled.refusal.message}`);
+  const balance = piled.warnings.find((w) => w.code === EDIT_WARNINGS.DAY_BALANCE);
+  assert(balance, `Coach A’s two students would both be on Monday: ${JSON.stringify(piled.warnings)}`);
+  assert(balance.message.includes('Monday'), balance.message);
+
+  const spread = move(ED_CTX, ED_PLACEMENTS, { contactSfId: 'E2', coach: 'Coach A', day: 'Wednesday', start: t('10:00') });
+  assert(spread.ok, 'moving within the same day keeps the balance');
+  assertDeep(spread.warnings, [], 'so nothing is warned about');
+});
+
+test('there is no quota to breach in pre-allocated mode (§17.6)', () => {
+  const preAllocated = editContext({ mode: 'pre-allocated' });
+  const result = move(preAllocated, ED_PLACEMENTS, { contactSfId: 'E1', coach: 'Coach B', day: 'Tuesday', start: t('11:00') });
+  assert(result.ok);
+  assertEqual(result.warnings.filter((w) => w.code === EDIT_WARNINGS.QUOTA).length, 0, 'no quota warning without a quota');
+});
+
+group('§18.5 — placing a student from the unassigned tray');
+
+test('an unassigned student can be placed, and leaves the unassigned list', () => {
+  const result = move(ED_CTX, ED_PLACEMENTS, {
+    contactSfId: 'E5',
+    student: edStudent('E5'),
+    coach: 'Coach C',
+    day: 'Thursday',
+    start: t('09:00'),
+  });
+  assert(result.ok, `refused: ${result.refusal && result.refusal.message}`);
+  assertEqual(result.edit.kind, 'place', 'it is a placement, not a move');
+  assertEqual(result.edit.from, null, 'with nowhere to come from');
+
+  const edited = buildEditedSchedule(ED, [result.edit], ED_CTX);
+  assertEqual(edited.assignments.length, 5, 'the schedule now holds five students');
+  assertEqual(edited.unassigned.length, 0, 'and nobody is unassigned');
+  assertEqual(apptsFor(edited.appointments, 'E5').length, 4, 'the placed student has four meetings');
+  assert(apptsFor(edited.appointments, 'E5').every((r) => r.coachName === 'Coach C'), 'with the coach they were placed on');
+  assertEqual(
+    edited.assignments[edited.assignments.length - 1].student.contactSfId,
+    'E5',
+    'and they are appended after the scheduler’s own order (§7.3)'
+  );
+});
+
+test('placing a student never removes the one already there (§17.3)', () => {
+  const occupied = move(ED_CTX, ED_PLACEMENTS, {
+    contactSfId: 'E5',
+    student: edStudent('E5'),
+    coach: 'Coach B',
+    day: 'Tuesday',
+    start: t('09:00'),
+    offset: 1,
+  });
+  assertEqual(occupied.ok, false, 'the occupied offset is refused');
+  assertEqual(occupied.refusal.code, EDIT_REFUSALS.DOUBLE_BOOKED);
+});
+
+test('a student whose class block is unknown cannot be placed (§5.3, §17.4)', () => {
+  const strays = [...ED_STUDENTS, { contactSfId: 'E9', studentName: 'Zoe Zephyr', studentEmail: 'zoe@example.com', classBlock: 'Block Q' }];
+  const run = schedule(strays, ED_SLOTS, 'auto', ED_QUOTAS, ED_COACHES, { classBlocks: ED_BLOCKS });
+  const stray = run.unassigned.find((u) => u.student.contactSfId === 'E9');
+  assertEqual(stray.reason, REASONS.CLASS_BLOCK_NOT_FOUND, 'the scheduler set her aside');
+
+  const result = validateMove({ ...ED_CTX, students: strays }, ED_PLACEMENTS, {
+    contactSfId: 'E9',
+    student: stray.student,
+    coach: 'Coach C',
+    day: 'Thursday',
+    start: t('09:00'),
+  });
+  assertEqual(result.ok, false, 'and the editor will not schedule her either');
+  assertEqual(result.refusal.code, EDIT_REFUSALS.NO_CLASS_BLOCK);
+  assert(result.refusal.message.includes('Block Q'), result.refusal.message);
+  assert(result.refusal.message.includes('student list'), `it says where the fix is: ${result.refusal.message}`);
+
+  const blank = validateMove({ ...ED_CTX, students: strays }, ED_PLACEMENTS, {
+    contactSfId: 'E8',
+    student: { contactSfId: 'E8', studentName: 'No Block', classBlock: '' },
+    coach: 'Coach C',
+    day: 'Thursday',
+    start: t('09:00'),
+  });
+  assertEqual(blank.refusal.code, EDIT_REFUSALS.NO_CLASS_BLOCK, 'a blank class block is refused the same way');
+});
+
+group('§18.6 — undo, reset, and replay');
+
+test('undo removes one edit and leaves the rest applied', () => {
+  const first = move(ED_CTX, ED_PLACEMENTS, { contactSfId: 'E1', coach: 'Coach B', day: 'Tuesday', start: t('11:00') });
+  const afterFirst = buildEditedSchedule(ED, [first.edit], ED_CTX);
+  const second = move(ED_CTX, afterFirst.placements, { contactSfId: 'E2', coach: 'Coach A', day: 'Monday', start: t('11:00') });
+  const both = buildEditedSchedule(ED, [first.edit, second.edit], ED_CTX);
+
+  assertEqual(both.edits.length, 2, 'both edits applied');
+  assertEqual(
+    shapeOf(buildEditedSchedule(ED, [first.edit], ED_CTX).placements),
+    shapeOf(afterFirst.placements),
+    'undoing the second leaves exactly the schedule the first produced'
+  );
+  assertEqual(positionLabel(both.placements, 'E2'), 'Coach A/Monday/11:00/1', 'and the second really had moved someone');
+});
+
+test('reset restores the generated schedule exactly (§17.7)', () => {
+  const first = move(ED_CTX, ED_PLACEMENTS, { contactSfId: 'E1', coach: 'Coach B', day: 'Tuesday', start: t('11:00') });
+  const edited = buildEditedSchedule(ED, [first.edit], ED_CTX);
+  assert(shapeOf(edited.placements) !== shapeOf(ED_PLACEMENTS), 'the edit changed something');
+
+  const reset = buildEditedSchedule(ED, [], ED_CTX);
+  assertEqual(shapeOf(reset.placements), shapeOf(ED_PLACEMENTS), 'and resetting puts it all back');
+  assertDeep(
+    reset.appointments.map((r) => `${r.contactSfId}|${r.date}|${r.startTime}|${r.coachName}`),
+    ED.appointments.map((r) => `${r.contactSfId}|${r.date}|${r.startTime}|${r.coachName}`),
+    'row for row, the generated schedule'
+  );
+  assertEqual(reset.unassigned.length, ED.unassigned.length, 'including who was unassigned');
+});
+
+test('replay drops an edit that no longer fits, rather than applying it blind', () => {
+  const first = move(ED_CTX, ED_PLACEMENTS, { contactSfId: 'E1', coach: 'Coach B', day: 'Tuesday', start: t('11:00') });
+  const afterFirst = buildEditedSchedule(ED, [first.edit], ED_CTX);
+  // Ben is sent to the position Ann is now in. Undoing Ann's move (replaying
+  // Ben's edit alone) leaves Ben's target occupied by Ann again.
+  const second = validateMove(ED_CTX, afterFirst.placements, {
+    contactSfId: 'E2',
+    coach: 'Coach B',
+    day: 'Tuesday',
+    start: t('11:00'),
+    offset: 2,
+  });
+  assert(second.ok, `refused: ${second.refusal && second.refusal.message}`);
+
+  const both = replayEdits(ED_CTX, ED_PLACEMENTS, [first.edit, second.edit]);
+  assertEqual(both.applied.length, 2, 'both apply in order');
+
+  const undone = replayEdits(ED_CTX, ED_PLACEMENTS, [second.edit]);
+  assertEqual(undone.applied.length, 1, 'Ben’s edit still fits on its own');
+  assertEqual(positionLabel(undone.placements, 'E2'), 'Coach B/Tuesday/11:00/2');
+
+  // And an edit whose slot has gone is skipped, not guessed at.
+  const strippedContext = { ...ED_CTX, slots: ED_SLOTS.filter((s) => !(s.coach === 'Coach B' && s.start === t('11:00'))) };
+  const stripped = replayEdits(strippedContext, ED_PLACEMENTS, [first.edit]);
+  assertEqual(stripped.applied.length, 0, 'nothing was applied');
+  assertEqual(stripped.skipped.length, 1, 'and the edit is reported as skipped');
+});
+
+test('the same edits over the same schedule always give the same result (§4.6)', () => {
+  const first = move(ED_CTX, ED_PLACEMENTS, { contactSfId: 'E1', coach: 'Coach B', day: 'Tuesday', start: t('11:00') });
+  const a = buildEditedSchedule(editRun(), [first.edit], editContext());
+  const b = buildEditedSchedule(editRun(), [first.edit], editContext());
+  assertDeep(
+    a.appointments.map((r) => `${r.contactSfId}|${r.startDateTime}|${r.coachName}`),
+    b.appointments.map((r) => `${r.contactSfId}|${r.startDateTime}|${r.coachName}`),
+    'identical inputs, identical edited schedule'
+  );
+});
+
+group('§18.7 — regeneration discards edits');
+
+test('an edit made against one schedule is not carried into a rebuilt one (§17.5a)', () => {
+  const first = move(ED_CTX, ED_PLACEMENTS, { contactSfId: 'E1', coach: 'Coach B', day: 'Tuesday', start: t('11:00') });
+  assert(first.ok);
+  // The app clears the edit list before rebuilding; the overlay's half of that
+  // contract is that an empty list is the identity, so the rebuilt schedule is
+  // exactly what the engine produced.
+  const rebuilt = editRun({ quotas: { 'Coach A': 3, 'Coach B': 1, 'Coach C': 1 } });
+  const cleared = buildEditedSchedule(rebuilt, [], editContext({ quotas: { 'Coach A': 3, 'Coach B': 1, 'Coach C': 1 } }));
+  assertEqual(shapeOf(cleared.placements), shapeOf(placementsFromAssignments(rebuilt.assignments)), 'no edit survives');
+  assertEqual(cleared.edits.length, 0, 'and the edit list is empty');
+});
+
+group('§18.8 — invariants over an edited schedule');
+
+test('every §9 and §11.5 invariant still holds after several edits', () => {
+  const blocks = [{ coach: 'Coach A', week: 5 }];
+  const base = editRun({ blocks });
+  const context = editContext({ blocks });
+  const p0 = placementsFromAssignments(base.assignments);
+
+  const one = move(context, p0, { contactSfId: 'E1', coach: 'Coach B', day: 'Tuesday', start: t('11:00') });
+  assert(one.ok, `refused: ${one.refusal && one.refusal.message}`);
+  const afterOne = buildEditedSchedule(base, [one.edit], context);
+  const two = move(context, afterOne.placements, { contactSfId: 'E5', student: edStudent('E5'), coach: 'Coach C', day: 'Thursday', start: t('09:00') });
+  assert(two.ok, `refused: ${two.refusal && two.refusal.message}`);
+  const afterTwo = buildEditedSchedule(base, [one.edit, two.edit], context);
+  const three = validateSwap(context, afterTwo.placements, { contactSfId: 'E3', withContactSfId: 'E4' });
+  assert(three.ok, `refused: ${three.refusal && three.refusal.message}`);
+
+  const edited = buildEditedSchedule(base, [one.edit, two.edit, three.edit], context);
+  const rows = edited.appointments;
+
+  assertEqual(rows.filter((r) => [4, 8, 12].includes(r.weekNumber)).length, 0, 'nothing in weeks 4, 8 or 12');
+
+  const counts = new Map();
+  rows.forEach((r) => counts.set(r.contactSfId, (counts.get(r.contactSfId) || 0) + 1));
+  assertEqual(counts.size, edited.assignments.length, 'every assigned student has rows');
+  counts.forEach((count, id) => assertEqual(count, 4, `student ${id} has four meetings`));
+
+  const coachSeen = new Set();
+  const studentSeen = new Set();
+  rows.forEach((r) => {
+    const coachKey = `${r.coachName}|${r.date}|${r.startTime}`;
+    assert(!coachSeen.has(coachKey), `coach double-booked: ${coachKey}`);
+    coachSeen.add(coachKey);
+    const studentKey = `${r.contactSfId}|${r.date}|${r.startTime}`;
+    assert(!studentSeen.has(studentKey), `student double-booked: ${studentKey}`);
+    studentSeen.add(studentKey);
+  });
+
+  rows.forEach((r) => {
+    ED_CLASSES.forEach((cls) => {
+      const ownBlock = classBlockKey(cls.classBlock) === classBlockKey(r.classBlock);
+      const clash = ownBlock && cls.day === r.day && cls.start < t(r.endTime) && t(r.startTime) < cls.end;
+      assert(!clash, `${r.studentName} is scheduled during their own ${cls.className}`);
+    });
+    const inside = ED_AVAILABILITY.some(
+      (b) => b.coachName === r.coachName && b.day === r.day && b.start <= t(r.startTime) && t(r.endTime) <= b.end
+    );
+    assert(inside, `${r.coachName} ${r.day} ${r.startTime} is outside their availability`);
+  });
+
+  // §11.5 — nothing sits on a blocked coach-week or coach-date.
+  const isBlocked = blockedWeekLookup(blocks);
+  rows.forEach((r) => {
+    assert(!isBlocked(r.coachName, r.weekNumber, r.day), `${r.coachName} is blocked in week ${r.weekNumber}`);
+  });
+
+  // §4.3 — a student keeps one coach, one weekday and one start time.
+  counts.forEach((_, id) => {
+    const own = apptsFor(rows, id);
+    assertEqual(new Set(own.map((r) => `${r.coachName}|${r.day}|${r.startTime}`)).size, 1, `${id} has one slot`);
+    assertDeep(own.map((r) => r.meetingNumber).sort(), [1, 2, 3, 4], `${id} has meetings 1–4`);
+  });
+
+  // §7.1 — and the rows are still in export order.
+  assertDeep(
+    rows.map((r) => `${r.date}|${r.startTime}|${r.coachName}`),
+    sortAppointments([...rows]).map((r) => `${r.date}|${r.startTime}|${r.coachName}`),
+    'the edited schedule is in §7.1 row order'
+  );
+});
+
+test('an unedited student keeps their rows, including a §11.3 rescheduled one', () => {
+  const blocks = [{ coach: 'Coach A', week: 1 }];
+  const base = editRun({ blocks });
+  const context = editContext({ blocks });
+  const moved = base.appointments.filter((r) => r.rescheduledFromWeek !== '');
+  assert(moved.length > 0, 'the fixture really does displace a meeting');
+  const untouchedId = moved[0].contactSfId;
+  const other = ED_STUDENTS.find((s) => s.contactSfId !== untouchedId && base.assignments.some((a) => a.student === s));
+
+  const edit = move(context, placementsFromAssignments(base.assignments), {
+    contactSfId: other.contactSfId,
+    coach: 'Coach B',
+    day: 'Tuesday',
+    start: t('11:00'),
+  });
+  assert(edit.ok, `refused: ${edit.refusal && edit.refusal.message}`);
+  const edited = buildEditedSchedule(base, [edit.edit], context);
+
+  assertDeep(
+    apptsFor(edited.appointments, untouchedId).map((r) => `${r.date}|${r.startTime}|${r.coachName}|${r.rescheduledFromWeek}`),
+    apptsFor(base.appointments, untouchedId).map((r) => `${r.date}|${r.startTime}|${r.coachName}|${r.rescheduledFromWeek}`),
+    'the untouched student’s rows are identical, mark and all'
+  );
+  assert(
+    apptsFor(edited.appointments, other.contactSfId).every((r) => r.rescheduledFromWeek === ''),
+    'and the moved student’s rows are no longer the post-pass’s output'
+  );
+});
+
+test('moving a student with a §11.3 exception gives them their fourth meeting back', () => {
+  // Coach A is away for the whole of block 2, so their students lose a meeting
+  // they cannot get back with that coach (§11.3(3)).
+  const blocks = [5, 6, 7].map((week) => ({ coach: 'Coach A', week }));
+  const base = editRun({ blocks });
+  const context = editContext({ blocks });
+  assert(base.exceptions.length > 0, 'the fixture produces an exception');
+  const stranded = base.exceptions[0].student.contactSfId;
+  assertEqual(apptsFor(base.appointments, stranded).length, 3, 'that student is down to three meetings');
+
+  const edit = move(context, placementsFromAssignments(base.assignments), {
+    contactSfId: stranded,
+    coach: 'Coach B',
+    day: 'Tuesday',
+    start: t('11:00'),
+  });
+  assert(edit.ok, `refused: ${edit.refusal && edit.refusal.message}`);
+  const edited = buildEditedSchedule(base, [edit.edit], context);
+  assertEqual(apptsFor(edited.appointments, stranded).length, 4, 'and four again once they move to a coach who is there');
+  assertEqual(
+    edited.exceptions.filter((e) => e.student.contactSfId === stranded).length,
+    0,
+    'so the exception no longer describes anything'
+  );
+});
+
+group('§18.9 — the exports read the edited schedule');
+
+test('the §7.1 appointment rows carry the new coach, with the default columns unchanged', () => {
+  const edit = move(ED_CTX, ED_PLACEMENTS, { contactSfId: 'E1', coach: 'Coach B', day: 'Tuesday', start: t('11:00') });
+  const edited = buildEditedSchedule(ED, [edit.edit], ED_CTX);
+
+  const before = buildPreviewRows(ED.appointments, getDefaultMapping(), 200);
+  const after = buildPreviewRows(edited.appointments, getDefaultMapping(), 200);
+  assertDeep(after.columns.map((c) => c.header), before.columns.map((c) => c.header), 'the column set is untouched');
+
+  const coachColumn = after.columns.findIndex((c) => c.header === 'Coach Name');
+  const annRows = edited.appointments
+    .map((row, i) => ({ row, i }))
+    .filter(({ row }) => row.contactSfId === 'E1')
+    .map(({ i }) => after.rows[i][coachColumn]);
+  assertDeep(annRows, ['Coach B', 'Coach B', 'Coach B', 'Coach B'], 'and the moved student exports their new coach');
+  assert(
+    edited.appointments.filter((r) => r.contactSfId === 'E1').every((r) => r.rescheduledFromWeek === ''),
+    'no export flags a manual edit (§17.8)'
+  );
+});
+
+test('the §7.3 batch upload names the coach the edit gave them, and keeps its seven columns', () => {
+  const edit = move(ED_CTX, ED_PLACEMENTS, { contactSfId: 'E1', coach: 'Coach B', day: 'Tuesday', start: t('11:00') });
+  const edited = buildEditedSchedule(ED, [edit.edit], ED_CTX);
+  const rows = buildCoachAssignmentRows(edited.assignments);
+  const ann = rows.find((row) => row.studentName === 'Ann Adams');
+  assertEqual(ann.coachName, 'Coach B', 'the edited coach');
+  assertEqual(ann.coachUserId, 'C-B', 'and that coach’s Coach SF ID');
+  assertEqual(rows.length, 4, 'still one row per scheduled student');
+  assertDeep(buildCoachAssignmentAoa(edited.assignments)[0], [...COACH_ASSIGNMENT_HEADERS], 'headers unchanged');
+
+  const placed = move(ED_CTX, ED_PLACEMENTS, { contactSfId: 'E5', student: edStudent('E5'), coach: 'Coach C', day: 'Thursday', start: t('09:00') });
+  const withPlaced = buildCoachAssignmentRows(buildEditedSchedule(ED, [placed.edit], ED_CTX).assignments);
+  assertEqual(withPlaced.length, 5, 'a student placed from the tray gains a row');
+  assertEqual(withPlaced[withPlaced.length - 1].studentName, 'Eli Evans', 'appended after the scheduler’s order');
+});
+
+test('the §7.4 calendar follows the meeting to its new coach', () => {
+  const edit = move(ED_CTX, ED_PLACEMENTS, { contactSfId: 'E1', coach: 'Coach B', day: 'Tuesday', start: t('11:00') });
+  const edited = buildEditedSchedule(ED, [edit.edit], ED_CTX);
+
+  const newCoach = buildCoachCalendar(edited.appointments, 'Coach B', { campusLabel: 'London', timeZone: LONDON });
+  assertEqual(newCoach.meetings.filter((m) => m.contactSfId === 'E1').length, 4, 'all four are in the new coach’s file');
+  assert(newCoach.content.includes('Ann Adams'), 'and the student is named in it');
+
+  const oldCoach = buildCoachCalendar(edited.appointments, 'Coach A', { campusLabel: 'London', timeZone: LONDON });
+  assertEqual(oldCoach.meetings.filter((m) => m.contactSfId === 'E1').length, 0, 'and none is left in the old one');
+  assertEqual(
+    exportableCoachMeetings(edited.appointments, 'Coach B').length,
+    exportableCoachMeetings(ED.appointments, 'Coach B').length + 4,
+    'the per-coach count the §7.4 card shows follows the edit'
+  );
+});
+
+test('the booking views read the edited schedule too (§14, §17.8)', () => {
+  const edit = move(ED_CTX, ED_PLACEMENTS, { contactSfId: 'E1', coach: 'Coach B', day: 'Tuesday', start: t('11:00') });
+  const edited = buildEditedSchedule(ED, [edit.edit], ED_CTX);
+  const view = buildCoachBookings(edited.appointments, 'Coach B');
+  assert(view.students.some((s) => s.contactSfId === 'E1'), 'the new coach’s list holds the moved student');
+  assert(!buildCoachBookings(edited.appointments, 'Coach A').students.some((s) => s.contactSfId === 'E1'), 'the old one does not');
+
+  const timeline = buildStudentTimeline(edStudent('E1'), {
+    appointments: edited.appointments,
+    assignments: edited.assignments,
+    unassigned: edited.unassigned,
+    exceptions: edited.exceptions,
+    classBlocks: ED_BLOCKS,
+    startMonday: START_MONDAY,
+  });
+  assertEqual(timeline.coach, 'Coach B', 'and the student’s own view names their new coach');
+  assertEqual(timeline.coachingCount, 4);
+});
+
+test('describeEdit says who moved, from where, to where (§17.7)', () => {
+  const edit = move(ED_CTX, ED_PLACEMENTS, { contactSfId: 'E1', coach: 'Coach B', day: 'Tuesday', start: t('11:00') });
+  const line = describeEdit(edit.edit);
+  assert(line.includes('Ann Adams'), line);
+  assert(line.includes('Coach A') && line.includes('Coach B'), line);
+  assert(line.includes('offset'), line);
 });
 
 group('HTML escaping');

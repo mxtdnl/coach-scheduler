@@ -25,6 +25,7 @@ import {
   guard,
   guardAsync,
   guarded,
+  guardedAsync,
   describeError,
 } from './errors.js';
 import { isXLSXAvailable, XLSX_MISSING_MESSAGE } from './xlsx-loader.js';
@@ -64,6 +65,15 @@ import {
   filterStudents,
 } from './bookings.js';
 import {
+  buildEditedSchedule,
+  buildCoachGrid,
+  validateMove,
+  validateSwap,
+  describeEdit,
+  describePosition,
+  describeWeeks,
+} from './edits.js';
+import {
   getDefaultMapping,
   createConstantColumn,
   buildPreviewRows,
@@ -83,7 +93,10 @@ import {
 // reported rather than leaving a blank page (SPEC.md §6).
 installGlobalErrorHandlers();
 
-const STEPS = ['setup', 'upload', 'review', 'results'];
+// SPEC.md §6 — Edit sits between Review and Results. It is only offered once a
+// schedule exists (§17), and it never has to be used: Continue always goes on
+// to Results.
+const STEPS = ['setup', 'upload', 'review', 'edit', 'results'];
 
 // Parsed upload data lives only in memory (state.uploads) for the session —
 // per SPEC.md §2 it must never be written to localStorage.
@@ -119,10 +132,19 @@ const state = {
   // currently editing.
   blocks: [],
   blockingCoach: null,
-  // The Results booking views (SPEC.md §14). Only the current selection lives
-  // here — the bookings themselves are always read from the freshly computed
+  // The booking views (SPEC.md §14). Only the current selection lives here —
+  // the bookings themselves are always read from the freshly computed
   // schedule, never cached.
   bookings: { view: 'coach', coach: null, studentId: null, studentQuery: '' },
+  // Manual edits (SPEC.md §17), in the order they were made. In memory for the
+  // session only: an edit names an uploaded student, and §2 never persists
+  // uploaded data. `editing` is the Edit step's own UI state — which coach's
+  // grid is shown, and which student is currently picked up.
+  edits: [],
+  editing: { coach: null, selection: null, message: null },
+  // Whether a schedule exists at all, refreshed on every recompute. The Edit
+  // step appears only when it does (SPEC.md §6).
+  hasSchedule: false,
 };
 
 /** Looks up a required element, failing with a message that names it. */
@@ -158,6 +180,9 @@ const blockingNotice = mustFind('blocking-notice');
 const blockingList = mustFind('blocking-list');
 const blockingClear = mustFind('blocking-clear');
 const blockingSummary = mustFind('blocking-summary');
+const editsDiscardDialog = mustFind('edits-discard-dialog');
+const editsDiscardForm = mustFind('edits-discard-form');
+const editsDiscardBody = mustFind('edits-discard-body');
 const stepperItems = document.querySelectorAll('.stepper-item');
 const stepPanels = document.querySelectorAll('.step-panel');
 
@@ -189,34 +214,48 @@ function formatReadable(isoDate) {
 
 function handleStartDateChange() {
   const pickedDate = startDateInput.value;
+  const restoreDate = () => {
+    startDateInput.value = state.startDate || '';
+  };
 
   // Clearing the field is a normal thing to do — reflect it rather than
   // leaving Results showing a schedule built from the old date.
   if (!pickedDate) {
-    state.startDate = null;
-    setStartDate('');
-    dateNotice.hidden = true;
-    refreshComputedSteps();
-    return;
+    return withEditsCleared(
+      'changing the term start date',
+      () => {
+        state.startDate = null;
+        setStartDate('');
+        dateNotice.hidden = true;
+        refreshComputedSteps();
+      },
+      restoreDate
+    );
   }
 
   if (!/^\d{4}-\d{2}-\d{2}$/.test(pickedDate)) {
     throw new Error(`"${pickedDate}" is not a date the app can read. Use the date picker, or type it as YYYY-MM-DD.`);
   }
 
-  const monday = normaliseToMonday(pickedDate);
-  state.startDate = monday;
-  setStartDate(monday);
-  startDateInput.value = monday;
+  return withEditsCleared(
+    'changing the term start date',
+    () => {
+      const monday = normaliseToMonday(pickedDate);
+      state.startDate = monday;
+      setStartDate(monday);
+      startDateInput.value = monday;
 
-  if (monday !== pickedDate) {
-    dateNotice.textContent = `Week 1 will start ${formatReadable(monday)} (moved from your selected date).`;
-    dateNotice.hidden = false;
-  } else {
-    dateNotice.hidden = true;
-  }
+      if (monday !== pickedDate) {
+        dateNotice.textContent = `Week 1 will start ${formatReadable(monday)} (moved from your selected date).`;
+        dateNotice.hidden = false;
+      } else {
+        dateNotice.hidden = true;
+      }
 
-  refreshComputedSteps();
+      refreshComputedSteps();
+    },
+    restoreDate
+  );
 }
 
 /**
@@ -229,21 +268,58 @@ function renderCampusNotice() {
 }
 
 function handleCampusChange(campusId) {
-  state.campusId = campusOrDefault(campusId).id;
-  setCampus(state.campusId);
-  renderCampusNotice();
-  refreshComputedSteps();
+  return withEditsCleared(
+    'changing the campus',
+    () => {
+      state.campusId = campusOrDefault(campusId).id;
+      setCampus(state.campusId);
+      renderCampusNotice();
+      refreshComputedSteps();
+    },
+    () => {
+      campusSelect.value = state.campusId;
+    }
+  );
 }
 
 function handleModeChange(mode) {
-  state.mode = mode;
-  setMode(mode);
-  pairingsUploadCard.hidden = mode !== 'pre-allocated';
-  refreshComputedSteps();
+  if (mode === state.mode) return Promise.resolve(true);
+  return withEditsCleared(
+    'changing the assignment mode',
+    () => {
+      state.mode = mode;
+      setMode(mode);
+      pairingsUploadCard.hidden = mode !== 'pre-allocated';
+      refreshComputedSteps();
+    },
+    () => {
+      modeAutoInput.checked = state.mode === 'auto';
+      modePreAllocatedInput.checked = state.mode === 'pre-allocated';
+    }
+  );
+}
+
+/**
+ * SPEC.md §6/§17 — Edit only exists once there is a schedule to edit. Every
+ * other step is always available, so this is the whole rule.
+ */
+function isStepAvailable(step) {
+  return step !== 'edit' || state.hasSchedule;
+}
+
+/** The steps currently in the rail, in order. */
+function availableSteps() {
+  return STEPS.filter(isStepAvailable);
 }
 
 function renderStep() {
+  // The Edit step can disappear under the user (an upload changes, and the
+  // schedule with it), so never leave them standing on a step that is gone.
+  if (!isStepAvailable(STEPS[state.stepIndex])) {
+    state.stepIndex = STEPS.indexOf('review');
+  }
   const currentStep = STEPS[state.stepIndex];
+  const steps = availableSteps();
 
   stepPanels.forEach((panel) => {
     panel.hidden = panel.dataset.step !== currentStep;
@@ -251,19 +327,107 @@ function renderStep() {
 
   stepperItems.forEach((item) => {
     const stepName = item.dataset.step;
-    const itemIndex = STEPS.indexOf(stepName);
+    const available = isStepAvailable(stepName);
+    item.hidden = !available;
+    const position = steps.indexOf(stepName);
+    const index = item.querySelector('.stepper-index');
+    if (index && position !== -1) index.textContent = String(position + 1);
     item.classList.toggle('active', stepName === currentStep);
-    item.classList.toggle('completed', itemIndex < state.stepIndex);
+    item.classList.toggle('completed', position !== -1 && position < steps.indexOf(currentStep));
   });
 
-  backBtn.disabled = state.stepIndex === 0;
-  nextBtn.textContent = state.stepIndex === STEPS.length - 1 ? 'Done' : 'Continue';
-  nextBtn.disabled = state.stepIndex === STEPS.length - 1;
+  const last = steps[steps.length - 1];
+  backBtn.disabled = steps.indexOf(currentStep) === 0;
+  // The Edit step names where Continue goes, because it is the one step whose
+  // work is optional (SPEC.md §17).
+  nextBtn.textContent = currentStep === last ? 'Done' : currentStep === 'edit' ? 'Continue to Results' : 'Continue';
+  nextBtn.disabled = currentStep === last;
 }
 
 function goToStep(index) {
-  state.stepIndex = Math.min(Math.max(index, 0), STEPS.length - 1);
+  const target = STEPS[Math.min(Math.max(index, 0), STEPS.length - 1)];
+  const steps = availableSteps();
+  state.stepIndex = STEPS.indexOf(isStepAvailable(target) ? target : 'review');
   renderStep();
+  return steps;
+}
+
+/** Moves one step along the steps that currently exist, skipping any that do not. */
+function stepBy(direction) {
+  const steps = availableSteps();
+  const position = steps.indexOf(STEPS[state.stepIndex]);
+  const next = Math.min(Math.max(position + direction, 0), steps.length - 1);
+  goToStep(STEPS.indexOf(steps[next]));
+}
+
+// ---- Manual edits: the regeneration guard (SPEC.md §17.5a) ----
+//
+// Anything that recomputes the schedule — uploads, mode, FTE, start date,
+// campus, blocked weeks/dates — clears every manual edit, and only after an
+// explicit confirmation saying how many will be lost. There is no partial
+// re-application: an edit describes a position in a schedule that is about to
+// stop existing.
+
+let pendingDiscard = null;
+
+function editsLostSentence() {
+  const count = state.edits.length;
+  return `${count} manual edit${count === 1 ? '' : 's'} will be lost.`;
+}
+
+function confirmDiscardEdits(what) {
+  const message = `${capitalize(what)} rebuilds the schedule from scratch, so ${editsLostSentence()} They cannot be re-applied to the new schedule.`;
+
+  if (typeof editsDiscardDialog.showModal !== 'function') {
+    return Promise.resolve(window.confirm(message));
+  }
+  editsDiscardBody.textContent = message;
+  editsDiscardDialog.showModal();
+  return new Promise((resolve) => {
+    pendingDiscard = resolve;
+  });
+}
+
+function setupEditsDiscardDialog() {
+  const settle = (answer) => {
+    const resolve = pendingDiscard;
+    pendingDiscard = null;
+    if (resolve) resolve(answer);
+  };
+  editsDiscardForm.addEventListener('submit', (event) => {
+    const choice = event.submitter ? event.submitter.value : editsDiscardDialog.returnValue;
+    settle(choice === 'confirm');
+  });
+  // Esc (or any other close) keeps the edits: the safe answer is the one that
+  // does not throw work away.
+  editsDiscardDialog.addEventListener('close', () => settle(false));
+}
+
+/**
+ * Runs a change that recomputes the schedule. With no edits in play it just
+ * runs; with edits it asks first, and `revert` puts the control back the way
+ * it was when the answer is no.
+ */
+async function withEditsCleared(what, apply, revert) {
+  if (state.edits.length === 0) {
+    apply();
+    return true;
+  }
+  const confirmed = await confirmDiscardEdits(what);
+  if (!confirmed) {
+    if (revert) revert();
+    return false;
+  }
+  clearEdits();
+  apply();
+  return true;
+}
+
+/** Drops every manual edit and the current selection with it. */
+function clearEdits() {
+  state.edits = [];
+  state.editing.selection = null;
+  state.editing.message = null;
 }
 
 // ---- Upload step ----
@@ -414,17 +578,28 @@ async function handleFileForKey(key, file) {
   // in place rather than silently replacing it with nothing.
   if (!parsed) return;
 
-  state.uploads[key] = { fileName: file.name, result: parsed };
+  await withEditsCleared(
+    `uploading a new ${label} file`,
+    () => {
+      state.uploads[key] = { fileName: file.name, result: parsed };
 
-  guard(`showing the results for the ${label} file`, () => {
-    renderUploadResult(key);
-    // Pairings' displayed warnings depend on these two files; refresh it too.
-    if (key === 'studentList' || key === 'coachAvailability') renderUploadResult('pairings');
-    // The student list's class-block warnings depend on the class schedule.
-    if (key === 'classSchedule') renderUploadResult('studentList');
-  });
+      guard(`showing the results for the ${label} file`, () => {
+        renderUploadResult(key);
+        // Pairings' displayed warnings depend on these two files; refresh it too.
+        if (key === 'studentList' || key === 'coachAvailability') renderUploadResult('pairings');
+        // The student list's class-block warnings depend on the class schedule.
+        if (key === 'classSchedule') renderUploadResult('studentList');
+      });
 
-  refreshComputedSteps();
+      refreshComputedSteps();
+    },
+    () => {
+      // The file was never taken on, so put the picker back to the upload that
+      // is still in play.
+      const { fileInput } = getUploadElements(key);
+      fileInput.value = '';
+    }
+  );
 }
 
 function clearAllUploads() {
@@ -558,26 +733,38 @@ function persistBlocks() {
   setBlocks(state.blocks);
 }
 
-/** Adds a block unless it is already there; returns whether it was added. */
-function addBlock(block) {
+/**
+ * Adds a block unless it is already there. Blocking re-runs the §11.3
+ * post-pass, which is a rebuild of the schedule, so it goes through the §17.5a
+ * guard. Returns a promise for whether it was added.
+ */
+async function addBlock(block) {
   const key = blockKey(block);
   if (state.blocks.some((existing) => blockKey(existing) === key)) return false;
-  state.blocks.push(block);
-  persistBlocks();
-  refreshComputedSteps();
-  return true;
+  let added = false;
+  await withEditsCleared('blocking a week or date', () => {
+    state.blocks.push(block);
+    persistBlocks();
+    refreshComputedSteps();
+    added = true;
+  });
+  return added;
 }
 
 function removeBlockByKey(key) {
-  state.blocks = state.blocks.filter((block) => blockKey(block) !== key);
-  persistBlocks();
-  refreshComputedSteps();
+  return withEditsCleared('removing a blocked week or date', () => {
+    state.blocks = state.blocks.filter((block) => blockKey(block) !== key);
+    persistBlocks();
+    refreshComputedSteps();
+  });
 }
 
 function clearAllBlocks() {
-  state.blocks = [];
-  persistBlocks();
-  refreshComputedSteps();
+  return withEditsCleared('clearing every blocked week and date', () => {
+    state.blocks = [];
+    persistBlocks();
+    refreshComputedSteps();
+  });
 }
 
 function showBlockingNotice(message) {
@@ -624,14 +811,15 @@ function toggleWeekForCoach(coach, week) {
   });
   if (existing.length > 0) {
     const keys = new Set(existing.map(blockKey));
-    state.blocks = state.blocks.filter((block) => !keys.has(blockKey(block)));
-    persistBlocks();
-    showBlockingNotice('');
-    refreshComputedSteps();
-    return;
+    return withEditsCleared('unblocking a week', () => {
+      state.blocks = state.blocks.filter((block) => !keys.has(blockKey(block)));
+      persistBlocks();
+      showBlockingNotice('');
+      refreshComputedSteps();
+    });
   }
   showBlockingNotice('');
-  addBlock({ coach, kind: 'week', week });
+  return addBlock({ coach, kind: 'week', week });
 }
 
 function termDateRange() {
@@ -673,7 +861,8 @@ function renderBlockingPanel(exceptionWeeksByCoach = new Map()) {
     label: coach ? `Blocked weeks for ${coach}` : 'Term weeks',
     interactive: canEdit,
     weekStates: weekStatesForCoach(coach, exceptionWeeksByCoach.get(coach) || new Set()),
-    onToggleWeek: (week) => guard('blocking or unblocking a week', () => toggleWeekForCoach(coach, week)),
+    onToggleWeek: (week) =>
+      guardedAsync('blocking or unblocking a week', () => toggleWeekForCoach(coach, week))(),
   });
 
   blockingList.replaceChildren();
@@ -704,7 +893,7 @@ function renderBlockingPanel(exceptionWeeksByCoach = new Map()) {
         remove.setAttribute('aria-label', `Remove the block on ${name}, ${text}`);
         remove.addEventListener(
           'click',
-          guarded('removing a block', () => removeBlockByKey(blockKey(block)))
+          guardedAsync('removing a block', () => removeBlockByKey(blockKey(block)))
         );
         item.append(label, remove);
         blockingList.appendChild(item);
@@ -757,7 +946,7 @@ function setupBlockingPanel() {
 
   blockingAddWeek.addEventListener(
     'click',
-    guarded('blocking a week', () => {
+    guardedAsync('blocking a week', async () => {
       const coach = state.blockingCoach;
       if (!coach) {
         showBlockingNotice('Upload the coach availability file to choose a coach.');
@@ -775,7 +964,7 @@ function setupBlockingPanel() {
         showBlockingNotice(`Week ${week} has no meetings, so blocking it changes nothing. It was not added.`);
         return;
       }
-      const added = addBlock({ coach, kind: 'week', week });
+      const added = await addBlock({ coach, kind: 'week', week });
       showBlockingNotice(added ? '' : `${coach} is already blocked for week ${week}.`);
       if (added) blockingWeekInput.value = '';
     })
@@ -783,7 +972,7 @@ function setupBlockingPanel() {
 
   blockingAddDate.addEventListener(
     'click',
-    guarded('blocking a date', () => {
+    guardedAsync('blocking a date', async () => {
       const coach = state.blockingCoach;
       if (!coach) {
         showBlockingNotice('Upload the coach availability file to choose a coach.');
@@ -810,7 +999,7 @@ function setupBlockingPanel() {
         showBlockingNotice(`That date falls in week ${at.week}, which has no meetings, so it was not added.`);
         return;
       }
-      const added = addBlock({ coach, kind: 'date', date });
+      const added = await addBlock({ coach, kind: 'date', date });
       showBlockingNotice(added ? '' : `${coach} is already blocked on ${formatReadable(date)}.`);
       if (added) blockingDateInput.value = '';
     })
@@ -818,9 +1007,9 @@ function setupBlockingPanel() {
 
   blockingClear.addEventListener(
     'click',
-    guarded('clearing every block', () => {
+    guardedAsync('clearing every block', () => {
       showBlockingNotice('');
-      clearAllBlocks();
+      return clearAllBlocks();
     })
   );
 }
@@ -978,14 +1167,38 @@ function computeEngineState() {
     timeZone,
     startMonday: state.startDate || undefined,
   });
-  const appointments = blocked.appointments;
-  const exceptions = blocked.exceptions;
+
+  // SPEC.md §17.5 — the manual edits are the last layer, applied over the
+  // finished §5 + §11.3 schedule. Everything below this line, and every
+  // consumer of what this function returns, therefore reads the *edited*
+  // schedule (§17.8): the summary, utilisation, the class-blocks card, the
+  // booking views and all three exports.
+  const editContext = {
+    slots,
+    classBlocks,
+    blocks: engineBlocks,
+    quotas,
+    mode: state.mode,
+    startMonday: state.startDate || null,
+    timeZone,
+    students: studentRows,
+  };
+  const edited = buildEditedSchedule(
+    {
+      assignments,
+      unassigned,
+      appointments: blocked.appointments,
+      exceptions: blocked.exceptions,
+    },
+    state.edits,
+    editContext
+  );
 
   const scheduledByCoach = {};
   coaches.forEach((c) => {
     scheduledByCoach[c] = 0;
   });
-  assignments.forEach((a) => {
+  edited.assignments.forEach((a) => {
     scheduledByCoach[a.coach] = (scheduledByCoach[a.coach] || 0) + 1;
   });
 
@@ -1002,13 +1215,19 @@ function computeEngineState() {
     pairingRows,
     fte,
     quotas,
-    assignments,
-    unassigned,
-    appointments,
-    exceptions,
-    movedCount: blocked.movedCount,
+    assignments: edited.assignments,
+    unassigned: edited.unassigned,
+    appointments: edited.appointments,
+    exceptions: edited.exceptions,
+    movedCount: edited.movedCount,
     engineBlocks,
     scheduledByCoach,
+    // The §17 working set: the editable placements, the context every
+    // validation runs against, and the edits that actually survived replay.
+    editContext,
+    placements: edited.placements,
+    appliedEdits: edited.edits,
+    skippedEdits: edited.skipped,
   };
 }
 
@@ -1116,15 +1335,27 @@ function renderFteAndCapacityTable(eng) {
 
 function attachFteInputHandlers() {
   document.querySelectorAll('#review-content input.fte').forEach((input) => {
-    input.addEventListener('change', guarded('saving the FTE value', () => {
-      const coach = input.dataset.coach;
-      let value = Number(input.value);
-      if (!Number.isFinite(value)) value = 1;
-      value = Math.round(Math.min(1, Math.max(0.05, value)) * 100) / 100;
-      input.value = value.toFixed(2);
-      setFte(coach, value);
-      refreshComputedSteps();
-    }));
+    const previous = input.value;
+    input.addEventListener(
+      'change',
+      guardedAsync('saving the FTE value', () =>
+        withEditsCleared(
+          'changing an FTE value',
+          () => {
+            const coach = input.dataset.coach;
+            let value = Number(input.value);
+            if (!Number.isFinite(value)) value = 1;
+            value = Math.round(Math.min(1, Math.max(0.05, value)) * 100) / 100;
+            input.value = value.toFixed(2);
+            setFte(coach, value);
+            refreshComputedSteps();
+          },
+          () => {
+            input.value = previous;
+          }
+        )
+      )
+    );
   });
 }
 
@@ -1236,12 +1467,12 @@ function renderWarningsCard() {
     </div>`;
 }
 
-function renderReview() {
+function renderReview(engine) {
   const container = document.getElementById('review-content');
   if (!container) throw new Error('The page is missing the "review-content" element.');
   const parts = [];
 
-  if (!hasCoreUploads()) {
+  if (!hasCoreUploads() || !engine) {
     const heading = state.mode === 'pre-allocated' ? 'Pairings coverage' : 'Coach capacity';
     parts.push(
       `<div class="card"><h2>${heading}</h2><div class="table-wrap"><p class="table-empty">${escapeHtml(
@@ -1253,7 +1484,7 @@ function renderReview() {
     return;
   }
 
-  const eng = computeEngineState();
+  const eng = engine;
 
   if (eng.totalCapacity < eng.studentCount) {
     const shortBy = eng.studentCount - eng.totalCapacity;
@@ -1598,6 +1829,169 @@ function attachCoachAssignmentsButtonHandler() {
   });
 }
 
+// ---- Coach calendars on Results (SPEC.md §7.4) ----
+//
+// One row per coach, each with its own .ics download, and an "Export all
+// coaches" control above them. A dedicated card, rather than a control nested
+// inside the bookings view: the download is per coach, so the list of coaches
+// *is* the control, and nobody has to select a coach twice to get one file.
+
+/** The ICS options for the current run: the campus is the meeting's location. */
+function calendarOptions() {
+  const campus = campusOrDefault(state.campusId);
+  return { campusLabel: campus.label, timeZone: campus.timeZone };
+}
+
+/** What a coach's row says when their button is disabled (SPEC.md §14.4). */
+function coachCalendarEmptyState(coach, meetingCount) {
+  return meetingCount > 0
+    ? `${coach}'s meetings have no usable date and time, so there is nothing to put in a calendar file.`
+    : `${coach} has no meetings in this schedule, so there is nothing to show or export.`;
+}
+
+function renderCoachCalendarsCard(eng) {
+  const coaches = bookingCoaches(eng.coaches, eng.appointments);
+
+  if (coaches.length === 0) {
+    return `
+    <div class="card">
+      <h2>Coach calendars</h2>
+      <div class="table-wrap"><p class="table-empty">No coaches found in the availability file.</p></div>
+    </div>`;
+  }
+
+  const rows = coaches.map((coach) => {
+    const meetings = buildCoachBookings(eng.appointments, coach).meetingCount;
+    const exportable = exportableCoachMeetings(eng.appointments, coach).length;
+    return { coach, meetings, exportable };
+  });
+  const withMeetings = rows.filter((row) => row.exportable > 0);
+
+  const body = rows
+    .map(({ coach, meetings, exportable }) => {
+      const disabled = exportable === 0;
+      const note = disabled ? coachCalendarEmptyState(coach, meetings) : '';
+      return `
+    <tr>
+      <td>${escapeHtml(coach)}${note ? `<br /><span class="help-text calendar-note">${escapeHtml(note)}</span>` : ''}</td>
+      <td class="mono num">${exportable}</td>
+      <td class="calendar-action">
+        <button type="button" class="btn btn-secondary btn-small export-coach-calendar" data-coach="${escapeHtml(
+          coach
+        )}"${disabled ? ' disabled' : ''} aria-label="Download one calendar file holding every meeting for ${escapeHtml(
+          coach
+        )}">Download .ics</button>
+      </td>
+    </tr>`;
+    })
+    .join('');
+
+  const fileCount = withMeetings.length;
+  const allNote =
+    fileCount === 0
+      ? 'No coach has a meeting that can become a calendar event yet.'
+      : `Downloads ${fileCount} file${fileCount === 1 ? '' : 's'}, one per coach, in coach order. Coaches with no meeting are skipped. Your browser may ask permission before it allows several downloads at once.`;
+
+  return `
+    <div class="card">
+      <div class="section-head">
+        <div>
+          <h2>Coach calendars</h2>
+          <p class="help-text" style="margin:0">One .ics file per coach, holding every one of their meetings — they open or import it once and their whole term appears.</p>
+        </div>
+        <button type="button" id="export-all-calendars-btn" class="btn btn-secondary"${
+          fileCount === 0 ? ' disabled' : ''
+        } aria-label="Download one calendar file for each of the ${fileCount} coaches with meetings">Export all coaches</button>
+      </div>
+      <p class="help-text" id="calendars-all-note">${escapeHtml(allNote)}</p>
+      <div class="table-wrap">
+        <table>
+          <caption class="visually-hidden">Coaches, their exportable meeting counts, and a calendar download for each</caption>
+          <thead><tr><th>Coach</th><th class="num">Meetings</th><th>Calendar</th></tr></thead>
+          <tbody>${body}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+/** SPEC.md §7.4 — one .ics holding every meeting for one coach. */
+function exportOneCoachCalendar(coach) {
+  if (!hasResultsInputs()) {
+    showError('There is nothing to export yet.', blockedExplanation(), 'export-calendar');
+    return false;
+  }
+  // Rebuilt at click time, so the calendar always reflects the current
+  // schedule — manual edits included (SPEC.md §17.8).
+  const eng = guard('rebuilding the schedule for the calendar export', computeEngineState);
+  if (!eng) return false;
+  if (exportableCoachMeetings(eng.appointments, coach).length === 0) {
+    showError(
+      `${coach} has no scheduled meetings, so there is nothing to export.`,
+      'Choose a coach with meetings, or check the unassigned students table.',
+      'export-calendar'
+    );
+    return false;
+  }
+  return Boolean(
+    guard('creating the coach calendar file', () => exportCoachCalendar(eng.appointments, coach, calendarOptions()))
+  );
+}
+
+/** A pause between downloads, so a browser has time to accept each one. */
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * SPEC.md §7.4 — every coach's calendar, one file at a time, skipping the
+ * coaches with nothing to export. Not an archive: each coach gets exactly the
+ * file their own row's button produces.
+ */
+async function exportAllCoachCalendars() {
+  if (!hasResultsInputs()) {
+    showError('There is nothing to export yet.', blockedExplanation(), 'export-calendars-all');
+    return;
+  }
+  const eng = guard('rebuilding the schedule for the calendar exports', computeEngineState);
+  if (!eng) return;
+
+  const coaches = bookingCoaches(eng.coaches, eng.appointments).filter(
+    (coach) => exportableCoachMeetings(eng.appointments, coach).length > 0
+  );
+  if (coaches.length === 0) {
+    showError(
+      'No coach has a meeting that can become a calendar event.',
+      'Check the unassigned students table for the reason.',
+      'export-calendars-all'
+    );
+    return;
+  }
+
+  const note = document.getElementById('calendars-all-note');
+  for (let i = 0; i < coaches.length; i++) {
+    if (note) note.textContent = `Downloading file ${i + 1} of ${coaches.length} — ${coaches[i]}.`;
+    const ok = guard(`creating the calendar file for ${coaches[i]}`, () =>
+      exportCoachCalendar(eng.appointments, coaches[i], calendarOptions())
+    );
+    if (!ok) return;
+    if (i < coaches.length - 1) await pause(300);
+  }
+  if (note) {
+    note.textContent = `Downloaded ${coaches.length} file${
+      coaches.length === 1 ? '' : 's'
+    }, one per coach. If fewer arrived, your browser blocked the rest — allow multiple downloads for this page and try again.`;
+  }
+}
+
+function attachCoachCalendarHandlers() {
+  document.querySelectorAll('button.export-coach-calendar').forEach((btn) => {
+    btn.addEventListener(
+      'click',
+      guarded('creating the coach calendar', () => exportOneCoachCalendar(btn.dataset.coach))
+    );
+  });
+  const all = document.getElementById('export-all-calendars-btn');
+  if (all) all.addEventListener('click', guardedAsync('creating every coach calendar', exportAllCoachCalendars));
+}
+
 /** Re-queries and (re-)wires the Export button after every results-content re-render. */
 function attachExportButtonHandler() {
   const btn = document.getElementById('export-btn');
@@ -1622,24 +2016,544 @@ function attachExportButtonHandler() {
   });
 }
 
+// ---- The Edit step (SPEC.md §17) ----
+//
+// A coach's week as a grid of (coach, slot) cells, three positions to a cell —
+// one per offset (§4.5) — with an unassigned tray beside it. Picking a student
+// and then a target is the whole interaction, and it works by click and by
+// keyboard alike (§17.9): every position and every tray entry is a real
+// button with a real name, nothing is revealed only on hover, and the result
+// of each attempt is announced.
+//
+// All the judgement lives in edits.js. This code selects, renders and reports.
+
+const editLive = () => document.getElementById('edit-live');
+
+/** Minutes since midnight as HH:MM, for the labels the grid is built from. */
+const minutesToTimeLabel = (minutes) => {
+  const value = Number(minutes);
+  return Number.isFinite(value)
+    ? `${String(Math.floor(value / 60)).padStart(2, '0')}:${String(value % 60).padStart(2, '0')}`
+    : '';
+};
+
+/** Announces the result of an attempt, and keeps it on screen (§17.9). */
+function reportEditOutcome(kind, text) {
+  state.editing.message = { kind, text };
+  const live = editLive();
+  if (live) live.textContent = text;
+}
+
+/**
+ * Three outcomes, three token pairs (DESIGN.md §1, §3.5): a refusal is
+ * --err-tint, an edit that carried a soft warning is --warn-tint, and a plain
+ * success is --ok-tint with --action text. The words say the same thing, so
+ * none of it rests on colour.
+ */
+function renderEditMessage() {
+  const message = state.editing.message;
+  if (!message) return '';
+  const cls =
+    message.kind === 'error' ? 'banner banner-error' : message.kind === 'warn' ? 'banner' : 'banner banner-ok';
+  return `<p class="${cls}">${escapeHtml(message.text)}</p>`;
+}
+
+/** The student currently picked up, if they are still in the schedule. */
+function currentSelection(eng) {
+  const selection = state.editing.selection;
+  if (!selection) return null;
+  const student = eng.studentRows.find((row) => row.contactSfId === selection.contactSfId);
+  if (!student) {
+    state.editing.selection = null;
+    return null;
+  }
+  return { ...selection, student };
+}
+
+function setEditSelection(eng, contactSfId) {
+  const selection = state.editing.selection;
+  if (selection && selection.contactSfId === contactSfId) {
+    state.editing.selection = null;
+    reportEditOutcome('ok', `${selection.studentName} put back down. Nothing was changed.`);
+    return;
+  }
+  const student = eng.studentRows.find((row) => row.contactSfId === contactSfId);
+  if (!student) return;
+  const placement = eng.placements.find((entry) => entry.student.contactSfId === contactSfId);
+  state.editing.selection = {
+    contactSfId,
+    studentName: student.studentName,
+    placed: Boolean(placement),
+  };
+  reportEditOutcome(
+    'ok',
+    placement
+      ? `${student.studentName} picked up from ${describePosition({
+          coach: placement.coach,
+          day: placement.slot.day,
+          start: placement.slot.start,
+          offset: placement.offset,
+        })}. Choose where to put them, or choose another student to swap with.`
+      : `${student.studentName} picked up from the unassigned list. Choose a free position for them.`
+  );
+}
+
+/** Commits a validated edit, or reports exactly why it was refused (§17.4). */
+function commitEdit(result, successText) {
+  if (!result.ok) {
+    reportEditOutcome('error', `Refused: ${result.refusal.message}`);
+    refreshComputedSteps();
+    return false;
+  }
+  state.edits.push(result.edit);
+  state.editing.selection = null;
+  const warnings = result.warnings.map((warning) => warning.message).join(' ');
+  reportEditOutcome(warnings ? 'warn' : 'ok', warnings ? `${successText} ${warnings}` : successText);
+  refreshComputedSteps();
+  return true;
+}
+
+function handleEditMove(eng, { coach, day, start }) {
+  const selection = currentSelection(eng);
+  if (!selection) return;
+  const result = validateMove(eng.editContext, eng.placements, {
+    contactSfId: selection.contactSfId,
+    student: selection.student,
+    coach,
+    day,
+    start: Number(start),
+  });
+  const to = result.ok ? describePosition(result.edit.to) : `${coach}, ${day} ${minutesToTimeLabel(start)}`;
+  // Claimed before the re-render, so focus lands on the position just used
+  // rather than at the top of the page (DESIGN.md §5).
+  state.editing.focusKey = result.ok ? `pos:${selection.contactSfId}` : `cell:${coach}|${day}|${start}`;
+  commitEdit(
+    result,
+    `${selection.studentName} moved to ${to}. Their meetings are now in ${describeWeeks(result.offset || 1)}.`
+  );
+}
+
+function handleEditSwap(eng, targetId) {
+  const selection = currentSelection(eng);
+  if (!selection) return;
+  const target = eng.studentRows.find((row) => row.contactSfId === targetId);
+  const result = validateSwap(eng.editContext, eng.placements, {
+    contactSfId: selection.contactSfId,
+    withContactSfId: targetId,
+    student: selection.student,
+    withStudent: target,
+  });
+  state.editing.focusKey = `pos:${selection.contactSfId}`;
+  commitEdit(
+    result,
+    result.ok
+      ? `${selection.studentName} and ${target?.studentName || 'the other student'} swapped places. ${
+          selection.studentName
+        } is now at ${describePosition(result.edit.to)}, ${target?.studentName || 'they'} at ${describePosition(
+          result.edit.partner.to
+        )}.`
+      : ''
+  );
+}
+
+/** SPEC.md §17.7 — undoing one edit replays the rest, and says what it could not keep. */
+function undoEdit(editId) {
+  const removed = state.edits.find((edit) => edit.id === editId);
+  const kept = state.edits.filter((edit) => edit.id !== editId);
+  state.edits = kept;
+  state.editing.selection = null;
+
+  const eng = guard('undoing an edit', computeEngineState);
+  if (eng) {
+    // Replay may have dropped later edits that described a position this undo
+    // has just taken away. Keep only what actually applied, and say so.
+    const applied = new Set(eng.appliedEdits.map((edit) => edit.id));
+    const dropped = state.edits.filter((edit) => !applied.has(edit.id));
+    state.edits = state.edits.filter((edit) => applied.has(edit.id));
+    reportEditOutcome(
+      'ok',
+      dropped.length === 0
+        ? `Undone: ${describeEdit(removed)}.`
+        : `Undone: ${describeEdit(removed)}. ${dropped.length} later edit${
+            dropped.length === 1 ? '' : 's'
+          } no longer applied to the schedule and ${dropped.length === 1 ? 'was' : 'were'} dropped too.`
+    );
+  }
+  refreshComputedSteps();
+}
+
+function resetAllEdits() {
+  const count = state.edits.length;
+  clearEdits();
+  reportEditOutcome(
+    'ok',
+    count === 0 ? 'There were no edits to reset.' : `All ${count} edit${count === 1 ? '' : 's'} reset. This is the generated schedule again.`
+  );
+  refreshComputedSteps();
+}
+
+/** One (coach, slot) cell: up to three positions, plus a target when a student is in hand. */
+function renderEditCell(cell, coach, selection) {
+  if (!cell.available) {
+    return `<td class="edit-cell edit-cell-off"><span class="edit-cell-note">Not available</span></td>`;
+  }
+
+  const clashChips = cell.clashes
+    .map((name) => `<span class="chip chip-warn">Class: ${escapeHtml(name)}</span>`)
+    .join(' ');
+
+  const positions = cell.positions
+    .map((position) => {
+      const at = `${coach}, ${cell.day} ${minutesToTimeLabel(cell.start)}, offset ${position.offset}`;
+      const weeks = describeWeeks(position.offset);
+      // The cell is dense, so it carries the bare week numbers; every
+      // accessible name below spells them out in full.
+      const weekList = position.weeks.join(', ');
+      if (!position.student) {
+        return `<li class="edit-position edit-position-free"><span class="edit-position-meta mono">Offset ${position.offset} free · wks ${escapeHtml(
+          weekList
+        )}</span></li>`;
+      }
+      const isSelected = selection && selection.contactSfId === position.student.contactSfId;
+      const label = !selection
+        ? `Pick up ${position.student.studentName} at ${at}, ${weeks}`
+        : isSelected
+          ? `Put ${position.student.studentName} back down at ${at}`
+          : `Swap ${selection.studentName} with ${position.student.studentName} at ${at}, ${weeks}`;
+      return `<li><button type="button" class="edit-position edit-position-taken${
+        isSelected ? ' is-selected' : ''
+      }" data-edit-action="${selection && !isSelected ? 'swap' : 'pick'}" data-student="${escapeHtml(
+        position.student.contactSfId
+      )}" data-focus-key="pos:${escapeHtml(position.student.contactSfId)}" aria-pressed="${
+        isSelected ? 'true' : 'false'
+      }" aria-label="${escapeHtml(label)}">
+        <span class="edit-position-name">${escapeHtml(position.student.studentName)}</span>
+        <span class="edit-position-meta mono">Offset ${position.offset} · wks ${escapeHtml(weekList)}</span>
+      </button></li>`;
+    })
+    .join('');
+
+  // The target names the offset the student would take and the weeks it puts
+  // their meetings in, before anything is committed (SPEC.md §17.2).
+  let target = '';
+  if (selection) {
+    const free = cell.positions.filter(
+      (position) => !position.student || position.student.contactSfId === selection.contactSfId
+    );
+    if (free.length > 0) {
+      const offset = free[0].offset;
+      const weeks = describeWeeks(offset);
+      target = `<button type="button" class="btn btn-secondary btn-small edit-target" data-edit-action="move" data-coach="${escapeHtml(
+        coach
+      )}" data-day="${escapeHtml(cell.day)}" data-start="${cell.start}" data-focus-key="cell:${escapeHtml(
+        coach
+      )}|${escapeHtml(cell.day)}|${cell.start}" aria-label="${escapeHtml(
+        `Move ${selection.studentName} to ${coach}, ${cell.day} ${minutesToTimeLabel(
+          cell.start
+        )}, offset ${offset} — ${weeks}`
+      )}">Place here · offset ${offset}</button>`;
+    }
+  }
+
+  return `<td class="edit-cell">${clashChips ? `<div class="edit-cell-tags">${clashChips}</div>` : ''}<ul class="edit-positions">${positions}</ul>${target}</td>`;
+}
+
+/** SPEC.md §17.2 — one coach at a time: rows are start times, columns weekdays. */
+function renderEditGridCard(eng, selection) {
+  const coaches = eng.coaches;
+  const coach = state.editing.coach;
+
+  const options = [
+    `<option value="">${coaches.length === 0 ? 'No coaches in this run' : 'Choose a coach'}</option>`,
+    ...coaches.map(
+      (name) => `<option value="${escapeHtml(name)}"${name === coach ? ' selected' : ''}>${escapeHtml(name)}</option>`
+    ),
+  ].join('');
+
+  const head = `
+      <div class="section-head">
+        <div>
+          <h2 id="edit-grid-heading">Coach grid</h2>
+          <p class="help-text" style="margin:0">Pick a student, then choose where they go. All four of their meetings move together, and they take the first free offset in the slot you choose.</p>
+        </div>
+      </div>
+      <label class="field">
+        <span>Coach</span>
+        <select id="edit-coach">${options}</select>
+      </label>`;
+
+  if (!coach) {
+    return `<div class="card edit-grid-card">${head}${renderEditMessage()}<div class="table-wrap"><p class="table-empty">Choose a coach to see their week and move students around it.</p></div></div>`;
+  }
+
+  const grid = buildCoachGrid(eng.editContext, eng.placements, coach);
+  if (grid.rows.length === 0) {
+    return `<div class="card edit-grid-card">${head}${renderEditMessage()}<div class="table-wrap"><p class="table-empty">${escapeHtml(
+      `${coach} has no valid coaching slots, so there is nothing to place. Check their availability and the class timetables.`
+    )}</p></div></div>`;
+  }
+
+  const body = grid.rows
+    .map(
+      (row) => `
+    <tr>
+      <th scope="row" class="mono">${escapeHtml(row.startTime)}</th>
+      ${row.cells.map((cell) => renderEditCell(cell, coach, selection)).join('')}
+    </tr>`
+    )
+    .join('');
+
+  const placed = eng.placements.filter((placement) => placement.coach === coach).length;
+  const quota = state.mode === 'auto' ? ` · quota ${eng.quotas[coach] || 0}` : '';
+
+  return `
+    <div class="card edit-grid-card">
+      ${head}
+      <p class="help-text">${escapeHtml(`${placed} student${placed === 1 ? '' : 's'} with ${coach}`)}${escapeHtml(
+        quota
+      )} · ${grid.slotCount} slot${grid.slotCount === 1 ? '' : 's'} · up to ${MAX_STUDENTS_PER_SLOT} students per slot, one per offset.</p>
+      ${renderEditMessage()}
+      <div class="table-wrap">
+        <table class="edit-grid">
+          <caption class="visually-hidden">${escapeHtml(
+            `${coach}'s week: rows are start times, columns are weekdays, and each cell holds up to three students, one per offset`
+          )}</caption>
+          <thead>
+            <tr><th>Time</th>${grid.days.map((day) => `<th>${escapeHtml(day)}</th>`).join('')}</tr>
+          </thead>
+          <tbody>${body}</tbody>
+        </table>
+      </div>
+    </div>`;
+}
+
+/** SPEC.md §17.3 — the tray: every unassigned student, with the scheduler's own reason. */
+function renderEditTrayCard(eng, selection) {
+  // A student with no usable class block cannot be placed at all (§17.4): the
+  // clash check has no timetable to read, so the tray says what to fix rather
+  // than offering a control that can only refuse.
+  const unplaceable = new Set([REASONS.NO_CLASS_BLOCK, REASONS.CLASS_BLOCK_NOT_FOUND]);
+
+  const entries = eng.unassigned
+    .map(({ student, reason }) => {
+      if (unplaceable.has(reason)) {
+        return `
+      <li class="edit-tray-item edit-tray-item-off">
+        <span class="edit-position-name">${escapeHtml(student.studentName)}</span>
+        <span class="edit-position-meta mono">${escapeHtml(student.contactSfId)}</span>
+        <span class="chip chip-exception">${escapeHtml(capitalize(reason))}</span>
+        <span class="edit-position-meta">Fix their class block in the student list and upload it again — without a timetable there is nothing to check a slot against.</span>
+      </li>`;
+      }
+      const isSelected = selection && selection.contactSfId === student.contactSfId;
+      const label = isSelected
+        ? `Put ${student.studentName} back down`
+        : `Pick up ${student.studentName}, ${student.contactSfId}, unassigned: ${reason}`;
+      return `
+      <li><button type="button" class="edit-tray-item${isSelected ? ' is-selected' : ''}" data-edit-action="pick" data-student="${escapeHtml(
+        student.contactSfId
+      )}" data-focus-key="tray:${escapeHtml(student.contactSfId)}" aria-pressed="${
+        isSelected ? 'true' : 'false'
+      }" aria-label="${escapeHtml(label)}">
+        <span class="edit-position-name">${escapeHtml(student.studentName)}</span>
+        <span class="edit-position-meta mono">${escapeHtml(student.contactSfId)}</span>
+        <span class="chip chip-exception">${escapeHtml(capitalize(reason))}</span>
+      </button></li>`;
+    })
+    .join('');
+
+  return `
+    <div class="card edit-tray-card">
+      <h2 id="edit-tray-heading">Unassigned students</h2>
+      <p class="help-text">${
+        eng.unassigned.length === 0
+          ? 'Every student has a coach.'
+          : `${eng.unassigned.length} student${
+              eng.unassigned.length === 1 ? '' : 's'
+            } with no place, and the reason the scheduler gave. Pick one, then choose a free position in the grid.`
+      }</p>
+      ${
+        eng.unassigned.length === 0
+          ? '<p class="table-empty">Nothing to place.</p>'
+          : `<ul class="edit-tray-list" aria-labelledby="edit-tray-heading">${entries}</ul>`
+      }
+    </div>`;
+}
+
+/** SPEC.md §17.7 — the edits list, in the order made, with per-edit undo. */
+function renderEditsListCard() {
+  const count = state.edits.length;
+  if (count === 0) {
+    return `
+    <div class="card">
+      <h2>Edits (0)</h2>
+      <div class="table-wrap"><p class="table-empty">No manual edits yet. The schedule below is exactly the one the scheduler generated.</p></div>
+    </div>`;
+  }
+
+  const items = state.edits
+    .map((edit, index) => {
+      const warnings = edit.warnings
+        .map((warning) => `<span class="chip chip-warn">${escapeHtml(warning.message)}</span>`)
+        .join(' ');
+      return `
+      <li>
+        <div class="edit-entry">
+          <span class="edit-entry-index mono">${index + 1}</span>
+          <div class="edit-entry-body">
+            <span>${escapeHtml(describeEdit(edit))}</span>
+            ${warnings ? `<div class="edit-entry-warnings">${warnings}</div>` : ''}
+          </div>
+          <button type="button" class="btn btn-destructive btn-small" data-edit-action="undo" data-edit-id="${escapeHtml(
+            edit.id
+          )}" aria-label="${escapeHtml(`Undo: ${describeEdit(edit)}`)}">Undo</button>
+        </div>
+      </li>`;
+    })
+    .join('');
+
+  return `
+    <div class="card">
+      <div class="section-head">
+        <div>
+          <h2>Edits (${count})</h2>
+          <p class="help-text" style="margin:0">In the order you made them. Undoing one replays the rest; any that no longer fits the schedule is dropped too.</p>
+        </div>
+        <button type="button" class="btn btn-destructive" data-edit-action="reset">Reset all edits</button>
+      </div>
+      <ol class="edit-list">${items}</ol>
+    </div>`;
+}
+
+function renderEditStep(engine) {
+  const container = document.getElementById('edit-content');
+  const sub = document.getElementById('edit-sub');
+  const bookings = document.getElementById('edit-bookings-mount');
+  if (!container || !sub) throw new Error('The page is missing the edit content elements.');
+
+  if (!engine || !hasResultsInputs() || engine.appointments.length === 0) {
+    sub.textContent = 'Move, place or swap a student’s whole placement. No edit is required.';
+    container.innerHTML = `<div class="card"><div class="table-wrap"><p class="table-empty">${escapeHtml(
+      !engine || !hasResultsInputs()
+        ? blockedExplanation()
+        : 'No appointments were scheduled, so there is nothing to edit yet.'
+    )}</p></div></div>`;
+    if (bookings) bookings.replaceChildren();
+    return;
+  }
+
+  const eng = engine;
+  if (state.editing.coach && !eng.coaches.includes(state.editing.coach)) state.editing.coach = null;
+  if (!state.editing.coach) state.editing.coach = eng.coaches[0] || null;
+
+  const selection = currentSelection(eng);
+  sub.innerHTML = selection
+    ? `Holding <strong>${escapeHtml(selection.studentName)}</strong> — choose a position for them, or press Escape to put them down.`
+    : `<span class="mono-500">${eng.assignments.length}</span> of <span class="mono-500">${eng.studentCount}</span> students placed · <span class="mono-500">${state.edits.length}</span> manual edit${
+        state.edits.length === 1 ? '' : 's'
+      }. No edit is required — Continue to Results always works.`;
+
+  container.innerHTML = `
+    <div class="edit-layout">
+      ${renderEditGridCard(eng, selection)}
+      ${renderEditTrayCard(eng, selection)}
+    </div>
+    ${renderEditsListCard()}`;
+
+  attachEditHandlers(eng);
+  guard('showing the bookings', () => renderBookingsSection(eng));
+
+  // The card was rebuilt under the user's hands, so put focus back where they
+  // left it (DESIGN.md §5: keyboard-complete).
+  if (state.editing.focusKey) {
+    const target = container.querySelector(`[data-focus-key="${CSS.escape(state.editing.focusKey)}"]`);
+    state.editing.focusKey = null;
+    if (target) target.focus();
+  }
+}
+
+/** Re-renders just the Edit step, for changes nothing else depends on. */
+function refreshEditStep() {
+  const eng = guard('showing the editable schedule', computeEngineState);
+  if (eng) renderEditStep(eng);
+}
+
+function attachEditHandlers(eng) {
+  const container = document.getElementById('edit-content');
+  if (!container) return;
+
+  const coachSelect = container.querySelector('#edit-coach');
+  if (coachSelect) {
+    coachSelect.addEventListener(
+      'change',
+      guarded('choosing a coach to edit', () => {
+        state.editing.coach = coachSelect.value || null;
+        state.editing.focusKey = null;
+        refreshEditStep();
+        const restored = document.getElementById('edit-coach');
+        if (restored) restored.focus();
+      })
+    );
+  }
+
+  container.querySelectorAll('[data-edit-action]').forEach((el) => {
+    const action = el.dataset.editAction;
+    el.addEventListener(
+      'click',
+      guarded('making that edit', () => {
+        if (action === 'pick') {
+          state.editing.focusKey = el.dataset.focusKey || null;
+          setEditSelection(eng, el.dataset.student);
+          refreshEditStep();
+          return;
+        }
+        if (action === 'swap') {
+          handleEditSwap(eng, el.dataset.student);
+          return;
+        }
+        if (action === 'move') {
+          handleEditMove(eng, { coach: el.dataset.coach, day: el.dataset.day, start: el.dataset.start });
+          return;
+        }
+        if (action === 'undo') {
+          undoEdit(el.dataset.editId);
+          return;
+        }
+        if (action === 'reset') resetAllEdits();
+      })
+    );
+  });
+}
+
+/** Escape puts down whatever is in hand, without changing anything. */
+function setupEditKeyboard() {
+  document.addEventListener(
+    'keydown',
+    guarded('putting the selected student down', (event) => {
+      if (event.key !== 'Escape') return;
+      if (STEPS[state.stepIndex] !== 'edit' || !state.editing.selection) return;
+      const name = state.editing.selection.studentName;
+      state.editing.selection = null;
+      reportEditOutcome('ok', `${name} put back down. Nothing was changed.`);
+      refreshEditStep();
+    })
+  );
+}
+
 // ---- Bookings (SPEC.md §14) ----
 //
-// A read-only inspection view over the finished schedule: pick a coach and see
-// who they are meeting, or pick a student and see their whole term. Both are
-// built from the same appointment rows the export writes (bookings.js), so the
-// screen and the file can never drift apart. Nothing here edits a schedule.
+// An inspection view over the current schedule, on the Edit step since v1.9:
+// pick a coach and see who they are meeting, or pick a student and see their
+// whole term. Both are built from the same appointment rows the export writes
+// (bookings.js), and from the *edited* schedule (§17.5), so the screen, the
+// grid above it and the files can never drift apart. The card itself displays;
+// the grid and the tray are what change a placement.
 
 /** The week number as a chip in its term block's colours (DESIGN.md §3.5). */
 function weekChip(week) {
   const block = blockOfWeek(week);
   if (!block) return `<span class="mono">${escapeHtml(String(week))}</span>`;
   return `<span class="chip chip-wk-b${block}">Week ${escapeHtml(String(week))}</span>`;
-}
-
-/** The ICS options for the current run: the campus is the meeting's location. */
-function calendarOptions() {
-  const campus = campusOrDefault(state.campusId);
-  return { campusLabel: campus.label, timeZone: campus.timeZone };
 }
 
 function bookingsEmptyState(message) {
@@ -1658,7 +2572,7 @@ function renderCoachBookingsPanel(eng) {
 
   const view = buildCoachBookings(eng.appointments, coach);
   if (view.meetingCount === 0) {
-    return bookingsEmptyState(`${coach} has no meetings in this schedule, so there is nothing to show or export.`);
+    return bookingsEmptyState(coachCalendarEmptyState(coach, 0));
   }
 
   const rows = view.rows
@@ -1812,44 +2726,6 @@ function refreshBookingsPanel() {
   const eng = guard('showing the bookings', computeEngineState);
   if (!eng) return;
   panel.innerHTML = bookingsPanelHtml(eng);
-  updateCoachCalendarButton(eng);
-}
-
-/**
- * The coach calendar button (SPEC.md §7.4). It names the selected coach, and
- * is only enabled when that coach actually has meetings to export — an empty
- * calendar is not a useful download, so the panel says so instead.
- */
-function updateCoachCalendarButton(eng) {
-  const btn = document.getElementById('export-calendar-btn');
-  if (!btn) return;
-  const coach = state.bookings.coach;
-  // Counted, not serialised: the button's state must not cost a whole calendar
-  // on every re-render.
-  const exportable = coach ? exportableCoachMeetings(eng.appointments, coach) : [];
-  btn.disabled = exportable.length === 0;
-  btn.textContent = 'Export coach calendar (.ics)';
-  btn.setAttribute(
-    'aria-label',
-    coach
-      ? `Download one calendar file holding every meeting for ${coach}`
-      : 'Download one calendar file for the selected coach — choose a coach first'
-  );
-  const note = document.getElementById('bookings-export-note');
-  if (note) {
-    const meetings = coach ? buildCoachBookings(eng.appointments, coach).meetingCount : 0;
-    if (!coach) {
-      note.textContent = 'Choose a coach to enable the calendar download.';
-    } else if (exportable.length === 0 && meetings > 0) {
-      note.textContent = `${coach}'s meetings have no usable date and time, so there is nothing to put in a calendar file.`;
-    } else if (exportable.length === 0) {
-      note.textContent = `${coach} has no meetings to export.`;
-    } else {
-      note.textContent = `One .ics file holding all ${exportable.length} meeting${
-        exportable.length === 1 ? '' : 's'
-      } — open or import it once and they all appear in your calendar.`;
-    }
-  }
 }
 
 /** Fills the student <select> from the current search box contents. */
@@ -1890,7 +2766,7 @@ function fillStudentOptions(eng) {
  * Results on every keystroke.
  */
 function renderBookingsSection(eng) {
-  const mount = document.getElementById('bookings-mount');
+  const mount = document.getElementById('edit-bookings-mount');
   if (!mount) return;
 
   const isStudentView = state.bookings.view === 'student';
@@ -1901,7 +2777,7 @@ function renderBookingsSection(eng) {
   card.className = 'card';
   card.innerHTML = `
     <h2 id="bookings-heading">Bookings</h2>
-    <p class="help-text">Look up the generated schedule from either side: a coach's students, or a student's week. This is a read-only view of the schedule above.</p>
+    <p class="help-text">Look up the schedule from either side: a coach's students, or a student's week. It shows the schedule as it stands, including any edit made above.</p>
     <div class="toggle-group bookings-toggle" role="radiogroup" aria-labelledby="bookings-heading">
       <label class="toggle-option">
         <input type="radio" name="bookings-view" value="coach"${isStudentView ? '' : ' checked'} />
@@ -1938,11 +2814,7 @@ function renderBookingsSection(eng) {
                    )
                    .join('')}
                </select>
-             </label>
-             <div class="bookings-export">
-               <button type="button" id="export-calendar-btn" class="btn btn-secondary" disabled>Export coach calendar (.ics)</button>
-               <p class="help-text" id="bookings-export-note"></p>
-             </div>`
+             </label>`
       }
     </div>
     ${isStudentView ? '<p class="help-text" id="bookings-student-note"></p>' : ''}
@@ -2004,43 +2876,14 @@ function renderBookingsSection(eng) {
 
   const panel = card.querySelector('#bookings-panel');
   panel.innerHTML = bookingsPanelHtml(eng);
-  updateCoachCalendarButton(eng);
-
-  const exportBtn = card.querySelector('#export-calendar-btn');
-  if (exportBtn) exportBtn.addEventListener('click', guarded('creating the coach calendar', handleCoachCalendarExport));
 }
 
-/** SPEC.md §7.4 — one .ics holding every meeting for the selected coach. */
-function handleCoachCalendarExport() {
-  if (!hasResultsInputs()) {
-    showError('There is nothing to export yet.', blockedExplanation(), 'export-calendar');
-    return;
-  }
-  const coach = state.bookings.coach;
-  if (!coach) {
-    showError('Choose a coach before exporting a calendar.', null, 'export-calendar');
-    return;
-  }
-  // Rebuilt at click time, so the calendar always reflects the current schedule.
-  const eng = guard('rebuilding the schedule for the calendar export', computeEngineState);
-  if (!eng) return;
-  if (exportableCoachMeetings(eng.appointments, coach).length === 0) {
-    showError(
-      `${coach} has no scheduled meetings, so there is nothing to export.`,
-      'Choose a coach with meetings, or check the unassigned students table.',
-      'export-calendar'
-    );
-    return;
-  }
-  guard('creating the coach calendar file', () => exportCoachCalendar(eng.appointments, coach, calendarOptions()));
-}
-
-function renderResults() {
+function renderResults(engine) {
   const container = document.getElementById('results-content');
   const sub = document.getElementById('results-sub');
   if (!container || !sub) throw new Error('The page is missing the results content elements.');
 
-  if (!hasResultsInputs()) {
+  if (!hasResultsInputs() || !engine) {
     sub.textContent = 'The schedule, exceptions, and export appear here.';
     container.innerHTML = `<div class="card"><div class="table-wrap"><p class="table-empty">${escapeHtml(
       blockedExplanation()
@@ -2048,7 +2891,7 @@ function renderResults() {
     return;
   }
 
-  const eng = computeEngineState();
+  const eng = engine;
   const scheduledCount = eng.assignments.length;
   const unassignedChip = eng.unassigned.length > 0 ? ` · <span class="chip chip-exception">${eng.unassigned.length} unassigned</span>` : '';
   const exceptionChip =
@@ -2060,21 +2903,31 @@ function renderResults() {
 
   sub.innerHTML = `<span class="mono-500">${scheduledCount}</span> of <span class="mono-500">${eng.studentCount}</span> students scheduled · <span class="mono-500">${eng.appointments.length}</span> appointments${movedNote}${unassignedChip}${exceptionChip}`;
 
+  const editsNote =
+    state.edits.length > 0
+      ? ` · <span class="chip chip-warn">${state.edits.length} manual edit${
+          state.edits.length === 1 ? '' : 's'
+        }</span>`
+      : '';
+
+  sub.innerHTML += editsNote;
+
   const parts = [
     renderUtilisationTable(eng),
     renderClassBlockResults(eng),
     renderExceptionsTable(eng),
     renderAppointmentsPreview(eng),
-    // The bookings card (SPEC.md §14) is built as elements after this markup
-    // lands, so its selectors can be wired without re-rendering all of Results.
-    '<div id="bookings-mount"></div>',
+    // SPEC.md §7.4 — one row per coach, each with its own .ics download, plus
+    // the "Export all coaches" control above them. The §14 bookings card is
+    // not here any more: it moved to the Edit step in v1.9.
+    renderCoachCalendarsCard(eng),
     renderCoachAssignmentsExport(eng),
   ];
 
   container.innerHTML = parts.join('');
   attachExportButtonHandler();
   attachCoachAssignmentsButtonHandler();
-  guard('showing the bookings', () => renderBookingsSection(eng));
+  guard('setting up the coach calendar downloads', () => attachCoachCalendarHandlers());
 }
 
 /**
@@ -2083,9 +2936,17 @@ function renderResults() {
  * FTE values, start date, and the export mapping (SPEC.md §5, §6, §7).
  */
 function refreshComputedSteps() {
-  guard('working out coach capacity', renderReview);
-  guard('building the schedule', renderResults);
-  guard('updating the blocked weeks and dates panel', renderBlockingContext);
+  // One engine run per refresh, shared by every step that draws from it. It is
+  // pure (SPEC.md §9) and includes the §17 edit overlay, so all four steps are
+  // guaranteed to be showing the same schedule.
+  const eng = hasCoreUploads() ? guard('building the schedule', computeEngineState, null) : null;
+  state.hasSchedule = Boolean(eng && hasResultsInputs() && eng.appointments.length > 0);
+
+  guard('working out coach capacity', () => renderReview(eng));
+  guard('showing the editable schedule', () => renderEditStep(eng));
+  guard('building the schedule', () => renderResults(eng));
+  guard('updating the blocked weeks and dates panel', () => renderBlockingContext(eng));
+  renderStep();
 }
 
 /**
@@ -2094,9 +2955,7 @@ function refreshComputedSteps() {
  * it alone shows blocked weeks; the Review/Results ribbons only carry the
  * exception dot, which is not coach-specific.
  */
-function renderBlockingContext() {
-  const eng = hasCoreUploads() ? computeEngineState() : null;
-
+function renderBlockingContext(eng) {
   const exceptionWeeksByCoach = new Map();
   const exceptionWeeks = new Set();
   (eng?.exceptions || []).forEach(({ coach, week }) => {
@@ -2122,9 +2981,9 @@ function persistExportMapping() {
   setExportMapping(state.exportMapping);
 }
 
-/** The preview table follows the mapping, so every edit re-renders Results. */
+/** The preview table follows the mapping, so every change re-renders Results. */
 function refreshResults() {
-  guard('updating the appointments preview', renderResults);
+  guard('updating the appointments preview', () => renderResults(hasCoreUploads() ? computeEngineState() : null));
 }
 
 function moveMappingColumn(index, direction) {
@@ -2278,6 +3137,10 @@ function setupExportSettings() {
  * (plus resetting the file inputs) is all it takes to leave nothing behind.
  */
 function startOver(alsoClearSettings) {
+  // Start over is itself the §17.5a confirmation: its dialogue says how many
+  // edits go with the uploads (see setupStartOver).
+  clearEdits();
+  state.editing.coach = null;
   clearAllUploads();
   clearAlerts();
   setBlockingSheetOpen(false);
@@ -2312,12 +3175,23 @@ function setupStartOver() {
     'click',
     guarded('opening the start over dialog', () => {
       startOverClearSettings.checked = false;
+      // SPEC.md §17.5a — this dialogue is the confirmation for the manual
+      // edits too, so it has to say how many of them are about to go.
+      const editsNote = mustFind('start-over-edits-note');
+      editsNote.textContent = state.edits.length > 0 ? editsLostSentence() : '';
+      editsNote.hidden = state.edits.length === 0;
       if (supportsDialog) {
         startOverDialog.showModal();
         return;
       }
       // Very old browsers with no <dialog>: same two questions, plain confirms.
-      if (!window.confirm('Start over? This clears the files you have uploaded and the schedule built from them.')) return;
+      const editsWarning = state.edits.length > 0 ? ` ${editsLostSentence()}` : '';
+      if (
+        !window.confirm(
+          `Start over? This clears the files you have uploaded and the schedule built from them.${editsWarning}`
+        )
+      )
+        return;
       startOver(window.confirm('Also clear saved settings (start date, mode, FTE values, and export column layout)?'));
     })
   );
@@ -2361,19 +3235,22 @@ function init() {
   campusSelect.value = state.campusId;
   renderCampusNotice();
 
-  startDateInput.addEventListener('change', guarded('reading the start date', handleStartDateChange));
+  startDateInput.addEventListener('change', guardedAsync('reading the start date', handleStartDateChange));
   campusSelect.addEventListener(
     'change',
-    guarded('changing the campus', () => handleCampusChange(campusSelect.value))
+    guardedAsync('changing the campus', () => handleCampusChange(campusSelect.value))
   );
-  modeAutoInput.addEventListener('change', guarded('switching to auto-assign mode', () => handleModeChange('auto')));
+  modeAutoInput.addEventListener(
+    'change',
+    guardedAsync('switching to auto-assign mode', () => handleModeChange('auto'))
+  );
   modePreAllocatedInput.addEventListener(
     'change',
-    guarded('switching to pre-allocated mode', () => handleModeChange('pre-allocated'))
+    guardedAsync('switching to pre-allocated mode', () => handleModeChange('pre-allocated'))
   );
 
-  backBtn.addEventListener('click', guarded('going back a step', () => goToStep(state.stepIndex - 1)));
-  nextBtn.addEventListener('click', guarded('going to the next step', () => goToStep(state.stepIndex + 1)));
+  backBtn.addEventListener('click', guarded('going back a step', () => stepBy(-1)));
+  nextBtn.addEventListener('click', guarded('going to the next step', () => stepBy(1)));
 
   stepperItems.forEach((item) => {
     item.addEventListener('click', guarded('changing step', () => goToStep(STEPS.indexOf(item.dataset.step))));
@@ -2389,12 +3266,17 @@ function init() {
   });
 
   UPLOAD_KEYS.forEach((key) => guard(`setting up the ${UPLOAD_LABELS[key]} upload`, () => setupUpload(key)));
-  mustFind('clear-uploads-btn').addEventListener('click', guarded('clearing the uploads', clearAllUploads));
+  mustFind('clear-uploads-btn').addEventListener(
+    'click',
+    guardedAsync('clearing the uploads', () => withEditsCleared('clearing the uploads', clearAllUploads))
+  );
 
   state.blocks = sanitiseBlocks(getBlocks());
 
   setupStartOver();
   guard('setting up the blocked weeks and dates panel', setupBlockingPanel);
+  guard('setting up the discard-edits dialogue', setupEditsDiscardDialog);
+  guard('setting up the edit step', setupEditKeyboard);
   guard('setting up the export settings panel', setupExportSettings);
 
   renderStep();

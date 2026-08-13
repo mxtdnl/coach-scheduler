@@ -31,6 +31,7 @@ own computer and are never sent anywhere. Closing the tab throws the data away.
 2. [The meeting rules](#2-the-meeting-rules)
 3. [The four templates and their columns](#3-the-four-templates-and-their-columns)
 4. [Step-by-step walkthrough](#4-step-by-step-walkthrough)
+4a. [The Edit step: moving students by hand](#the-edit-step-moving-students-by-hand)
 5. [The two modes](#5-the-two-modes)
 6. [FTE: sharing students between coaches](#6-fte-sharing-students-between-coaches)
 7. [The export files](#7-the-export-files)
@@ -83,7 +84,7 @@ patterns, called offsets:
 
 **Weeks 4, 8 and 12 are never used.** They are deliberate gaps in the rhythm.
 You will see them greyed out and struck through on the term strip at the top of
-the Review and Results steps.
+the Review, Edit and Results steps.
 
 That strip also shows the term's four **blocks** — weeks 1–3, 5–7, 9–11 and
 13–15. Every student has exactly one meeting in each block.
@@ -215,8 +216,9 @@ Only needed in **pre-allocated** mode. One row per student.
 
 ## 4. Step-by-step walkthrough
 
-The four steps run left to right down the side of the page. You can click back
-and forth between them freely; nothing is lost.
+The steps run down the side of the page. You can click back and forth between
+them freely; nothing is lost. **Edit** only appears once there is a schedule to
+edit, so before that there are four.
 
 ### Step 1 — Setup
 
@@ -275,7 +277,14 @@ usually pairings pointing at people the tool cannot find.
 If capacity is lower than the number of students, an amber banner says so and
 by how much, before you get as far as the results.
 
-### Step 4 — Results
+### Step 4 — Edit
+
+The Edit step appears once a schedule exists, and it is entirely optional:
+**Continue to Results** always works, and a run you are happy with needs
+nothing here. It is where you overrule the scheduler by hand — see
+[section 4a](#the-edit-step-moving-students-by-hand).
+
+### Step 5 — Results
 
 - A one-line summary: how many students were scheduled, how many appointments
   that makes, and how many students could not be placed.
@@ -292,8 +301,9 @@ by how much, before you get as far as the results.
   your export will have.
 - **Export appointments** — downloads the spreadsheet, named
   `appointments_2026-09-01_1430.xlsx` (the date and time you generated it).
-- **Bookings** — look the schedule up by coach or by student, and download a
-  coach's calendar (see below).
+- **Coach calendars** — one row per coach with their meeting count and a
+  **Download .ics** button, plus **Export all coaches** to download the lot
+  (see [section 7.4](#74-the-coach-calendar-download-one-ics-file)).
 - **Coach assignments** (auto-assign only) — a second card with its own
   **Export coach assignments** button, giving one row per student and the coach
   they were assigned. It is a different file from the appointments export; see
@@ -325,13 +335,68 @@ it holds the week it moved from.
 is always `Scheduled`.
 
 
+### The Edit step: moving students by hand
+
+The scheduler's answer is a starting point, not a verdict. On the **Edit**
+step you can move a student to a different coach or a different hour, place a
+student the scheduler could not fit, or swap two students over.
+
+**What an edit moves.** A student's whole placement — their coach, their
+weekday and their start time — so **all four of their meetings move
+together**. You cannot move one meeting on its own; that is still out of scope.
+Because the four meetings follow the *offset* of the position they land in,
+their weeks change: land on offset 2 and they meet in weeks 2, 6, 10 and 14.
+The grid says which offset and which weeks **before** you commit.
+
+**The coach grid.** Choose a coach and you see their week: start times down the
+side, weekdays across the top. Each cell is one hour with that coach and holds
+up to three students, one per offset. A cell the coach does not work is hatched
+and says *Not available*; a cell covered by a class carries a chip naming the
+block, because it is still free for every other cohort.
+
+**How to move somebody.** Click a student to pick them up, then click **Place
+here** in the cell you want, or click another student to swap the two. It all
+works from the keyboard: tab to a student, press Enter to pick them up, tab to
+a target, press Enter again. Escape puts them back down. Every result is
+announced and shown in a message above the grid.
+
+**Unassigned students.** The panel beside the grid lists everyone the
+scheduler could not place, with its own reason. Pick one and give them a
+position. The exception is a student whose class block is missing or not in the
+class schedule: there is no timetable to check a slot against, so they cannot
+be placed until you fix their class block in the student list.
+
+**What gets refused.** The tool blocks an edit — and says why — when the slot
+overlaps a class in that student's own block, when the cell already has three
+students, when it would put two students on one offset, or when any of the four
+resulting meetings falls in a week you have blocked for that coach. A swap has
+to pass every check in both directions or it is refused whole; neither student
+moves.
+
+**What only warns.** Going over a coach's FTE quota, or piling a coach's
+students onto one day, is allowed — the warning stays on the edit so you can
+see it later.
+
+**Edits (N).** Every change is listed in the order you made it, with its own
+**Undo** and a **Reset all edits** button. Undoing one replays the rest, and
+says so if a later edit no longer fits.
+
+**Edits are lost when the schedule is rebuilt.** Changing an upload, the mode,
+an FTE value, the start date, the campus or a blocked week recomputes the whole
+schedule, so the edits cannot survive it. The tool asks first and says how many
+you would lose; cancel and nothing changes. Edits are never saved to your
+browser's storage either, so closing the tab loses them.
+
+Everything downstream reads the edited schedule: the summary, the utilisation
+table, the class blocks card, the bookings views, and all three exports. No
+export marks an edited row — an edit is visible on screen only.
+
 ### Bookings: look the schedule up by coach or by student
 
-The **Bookings** card near the bottom of the Results step answers the two
-questions the big appointments table is bad at: *who is this coach meeting?*
-and *what does this student's term actually look like?* It only reads the
-schedule — nothing here changes it, and nothing is listed until you choose
-somebody.
+The **Bookings** card at the bottom of the Edit step answers the two questions
+the big appointments table is bad at: *who is this coach meeting?* and *what
+does this student's term actually look like?* It shows the schedule as it
+stands, edits included, and nothing is listed until you choose somebody.
 
 Use the **By coach** / **By student** toggle to switch sides. Both work from
 the keyboard: tab to the toggle, use the arrow keys to switch, tab on to the
@@ -545,10 +610,16 @@ you do here.
 
 ### 7.4 The coach calendar download (one .ics file)
 
-In the **Bookings** card, with **By coach** selected and a coach chosen, press
-**Export coach calendar (.ics)**. It downloads
-`ada-lovelace_calendar_2026-09-01_1430.ics` — the coach's name, then the date
-and time you generated it.
+On the Results step, the **Coach calendars** card lists every coach with the
+number of meetings they have and a **Download .ics** button of their own. Press
+one and it downloads `ada-lovelace_calendar_2026-09-01_1430.ics` — the coach's
+name, then the date and time you generated it.
+
+**Export all coaches** downloads one file per coach, one after another,
+skipping any coach with no meetings. The card says how many files that will be
+before you press it. Browsers are wary of pages that download several files at
+once, so yours may ask permission the first time; allow it and the rest
+arrive.
 
 **One file, all their meetings.** The download is a single calendar file
 holding **every meeting that coach actually has** in the generated schedule: a
@@ -585,8 +656,8 @@ A few things worth knowing:
   that had to be dropped because of a blocked week is not in the file either —
   because it is not in the schedule. A meeting that was *moved* appears once,
   on its new date.
-- **A coach with nothing booked cannot export.** The button stays greyed out
-  and the card says why.
+- **A coach with nothing booked cannot export.** Their button stays greyed out
+  and their row says why.
 - **It changes nothing.** The download is a read-only view of the results; your
   schedule and your other exports are untouched.
 
@@ -738,10 +809,9 @@ These appear as a banner at the top of the page and can be dismissed.
 
 Out of scope: per-student class timetables (students belong to a class block),
 per-student coaching availability, more than one campus per run, public
-holidays, and editing individual appointments after they are generated. The
-Results step lets you *inspect* the schedule meeting by meeting
-([section 4](#bookings-look-the-schedule-up-by-coach-or-by-student)) and export
-a coach's meetings as a calendar file, but it never edits one.
+holidays, editing a **single dated meeting** on its own, and removing a student
+from a generated schedule. The Edit step moves a student's whole placement —
+all four meetings together — and never one occurrence of it.
 
 ---
 
