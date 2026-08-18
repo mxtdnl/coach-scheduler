@@ -2646,6 +2646,55 @@ test('a swap both directions can take exchanges the two placements exactly', () 
   assertEqual(apptsFor(edited.appointments, 'E2').length, 4);
 });
 
+test('a swap works across two different coaches, exchanging coach, slot and offset', () => {
+  // Ann is with Coach A on a Monday; Dee is with Coach B on a Tuesday. A swap
+  // is not a within-coach reshuffle: each takes the other's coach, day, start
+  // time and offset, so both sets of meeting weeks change too.
+  const annBefore = placementOf(ED_PLACEMENTS, 'E1');
+  const deeBefore = placementOf(ED_PLACEMENTS, 'E4');
+  assert(annBefore.coach !== deeBefore.coach, `the fixture really does span two coaches: ${annBefore.coach} / ${deeBefore.coach}`);
+
+  const swap = validateSwap(ED_CTX, ED_PLACEMENTS, { contactSfId: 'E1', withContactSfId: 'E4' });
+  assert(swap.ok, `refused: ${swap.refusal && swap.refusal.message}`);
+
+  const edited = buildEditedSchedule(ED, [swap.edit], ED_CTX);
+  assertEqual(positionLabel(edited.placements, 'E1'), `${deeBefore.coach}/${deeBefore.slot.day}/${minutesToTime(deeBefore.slot.start)}/${deeBefore.offset}`, 'Ann took Dee’s place with the other coach');
+  assertEqual(positionLabel(edited.placements, 'E4'), `${annBefore.coach}/${annBefore.slot.day}/${minutesToTime(annBefore.slot.start)}/${annBefore.offset}`, 'and Dee took Ann’s');
+
+  const annRows = apptsFor(edited.appointments, 'E1');
+  const deeRows = apptsFor(edited.appointments, 'E4');
+  assertEqual(annRows.length, 4, 'both still have four meetings');
+  assertEqual(deeRows.length, 4);
+  assert(annRows.every((r) => r.coachName === deeBefore.coach), 'every one of Ann’s rows names her new coach');
+  assert(deeRows.every((r) => r.coachName === annBefore.coach), 'and every one of Dee’s names hers');
+  assert(annRows.every((r) => r.coachSfId === 'C-B' && r.coachEmail === 'b@example.com'), 'the new coach’s SF ID and email travel with the rows');
+  assertDeep(annRows.map((r) => r.weekNumber).sort((a, b) => a - b), weeksForOffset(deeBefore.offset), 'Ann’s weeks are the ones her new offset gives');
+  assertDeep(deeRows.map((r) => r.weekNumber).sort((a, b) => a - b), weeksForOffset(annBefore.offset), 'and Dee’s likewise');
+
+  // And the §7.3 export follows both of them to their new coaches.
+  const rows = buildCoachAssignmentRows(edited.assignments);
+  assertEqual(rows.find((r) => r.studentName === 'Ann Adams').coachName, deeBefore.coach);
+  assertEqual(rows.find((r) => r.studentName === 'Dee Doyle').coachName, annBefore.coach);
+});
+
+test('a cross-coach swap is still refused whole when the far side is blocked', () => {
+  // Coach B is away in week 2, and Dee sits on offset 2 — weeks 2, 6, 10, 14 —
+  // so sending Ann there fails, and Dee must not move either.
+  const blocks = [{ coach: 'Coach B', week: 2 }];
+  const base = editRun({ blocks });
+  const context = editContext({ blocks });
+  const placements = placementsFromAssignments(base.assignments);
+  const before = shapeOf(placements);
+  const dee = placementOf(placements, 'E4');
+  assertEqual(dee.offset, 2, 'the fixture puts Dee on offset 2');
+
+  const swap = validateSwap(context, placements, { contactSfId: 'E1', withContactSfId: 'E4' });
+  assertEqual(swap.ok, false, 'the swap is refused');
+  assertEqual(swap.refusal.code, EDIT_REFUSALS.BLOCKED_WEEK);
+  assert(swap.refusal.message.includes('refused whole'), swap.refusal.message);
+  assertEqual(shapeOf(buildEditedSchedule(base, [], context).placements), before, 'and neither student moved');
+});
+
 test('an unassigned student cannot be swapped onto an occupied position (§17.3: no removal)', () => {
   const swap = validateSwap(ED_CTX, ED_PLACEMENTS, { contactSfId: 'E5', withContactSfId: 'E1', student: edStudent('E5') });
   assertEqual(swap.ok, false);
