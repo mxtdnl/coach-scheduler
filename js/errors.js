@@ -121,6 +121,20 @@ export function guarded(action, handler) {
 }
 
 /**
+ * `guarded` for a handler that awaits something — the SPEC.md §17.5a
+ * confirmation dialogue, in practice. A rejection after the first await would
+ * escape `guarded`'s try/catch, so it is caught on the promise instead.
+ */
+export function guardedAsync(action, handler) {
+  return (...args) =>
+    Promise.resolve()
+      .then(() => handler(...args))
+      .catch((error) => {
+        showError(`Something went wrong while ${action}.`, describeError(error), `guard:${action}`);
+      });
+}
+
+/**
  * Catches anything that escapes the guards above — including errors thrown
  * from browser-invoked callbacks and rejected promises nobody awaited.
  */

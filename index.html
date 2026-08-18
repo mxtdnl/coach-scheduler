@@ -43,8 +43,14 @@
           </button>
         </li>
         <li>
-          <button type="button" class="stepper-item" data-step="results">
+          <button type="button" class="stepper-item" data-step="edit" hidden>
             <span class="stepper-index">4</span>
+            <span class="stepper-label">Edit</span>
+          </button>
+        </li>
+        <li>
+          <button type="button" class="stepper-item" data-step="results">
+            <span class="stepper-index" id="results-step-index">4</span>
             <span class="stepper-label">Results</span>
           </button>
         </li>
@@ -203,7 +209,23 @@
         <div id="review-content"></div>
       </section>
 
-      <!-- Step 4: Results -->
+      <!-- Step 4: Edit (SPEC.md §17) -->
+      <section class="step-panel" data-step="edit" hidden>
+        <h1 class="page-title">Edit the schedule</h1>
+        <p class="page-sub" id="edit-sub">Move, place or swap a student's whole placement. No edit is required.</p>
+
+        <div class="ribbon-mount" data-ribbon="edit"></div>
+
+        <!-- Announces the result of every placement, including a refusal and
+             its reason (SPEC.md §17.9). -->
+        <p id="edit-live" class="visually-hidden" role="status" aria-live="polite"></p>
+
+        <div id="edit-content"></div>
+
+        <div id="edit-bookings-mount"></div>
+      </section>
+
+      <!-- Step 5: Results -->
       <section class="step-panel" data-step="results" hidden>
         <h1 class="page-title">Results</h1>
         <p class="page-sub" id="results-sub">The schedule, exceptions, and export appear here.</p>
@@ -293,6 +315,19 @@
     <button type="button" id="next-btn" class="btn btn-primary">Continue</button>
   </footer>
 
+  <!-- SPEC.md §17.5a: anything that recomputes the schedule clears the manual
+       edits, and only after this dialogue says how many will be lost. -->
+  <dialog id="edits-discard-dialog" class="dialog" aria-labelledby="edits-discard-title">
+    <form method="dialog" id="edits-discard-form">
+      <h2 id="edits-discard-title">Discard your manual edits?</h2>
+      <p class="help-text" id="edits-discard-body"></p>
+      <div class="dialog-actions">
+        <button type="submit" value="cancel" class="btn btn-secondary" id="edits-discard-cancel">Keep the edits</button>
+        <button type="submit" value="confirm" class="btn btn-destructive" id="edits-discard-confirm">Discard and rebuild</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="start-over-dialog" class="dialog" aria-labelledby="start-over-title">
     <form method="dialog" id="start-over-form">
       <h2 id="start-over-title">Start over?</h2>
@@ -300,6 +335,9 @@
         This clears the files you have uploaded and the schedule built from them. The files on your computer are not
         touched.
       </p>
+      <!-- SPEC.md §17.5a: starting over also throws away the manual edits, so
+           this dialogue has to say how many. -->
+      <p class="banner banner-inline" id="start-over-edits-note" hidden></p>
       <label class="checkbox-field">
         <input type="checkbox" id="start-over-clear-settings" />
         <span>

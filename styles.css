@@ -659,6 +659,13 @@ input:focus {
   color: var(--err);
 }
 
+/* Confirmed, not warned: the §3.5 success pair. */
+.banner-ok {
+  border-color: var(--action);
+  background: var(--ok-tint);
+  color: var(--action);
+}
+
 /* Validation output: a bordered list inside the file's card. */
 .issue-group {
   border: 1px solid var(--err);
@@ -1111,6 +1118,242 @@ input[type="search"] {
   background: var(--surface);
   color: var(--ink);
   font: 400 13px/18px var(--mono);
+}
+
+/* ---------- The Edit step (SPEC.md §17) ---------- */
+
+/* Grid and tray sit side by side as two peer cards — DESIGN.md §3.2 allows no
+   card nesting, so the tray is its own card rather than a panel inside the
+   grid's. Below 1180px they stack. */
+.edit-layout {
+  display: flex;
+  align-items: flex-start;
+  gap: 20px;
+}
+
+.edit-grid-card {
+  flex: 1 1 640px;
+  min-width: 0;
+}
+
+.edit-tray-card {
+  flex: 0 0 300px;
+}
+
+.edit-grid-card .field {
+  margin-bottom: 16px;
+}
+
+/* The grid is a table (§3.3): weekday columns, start-time row headers. */
+.edit-grid {
+  min-width: 720px;
+  table-layout: fixed;
+}
+
+/* table-layout: fixed reads its widths from the header row, so the time
+   column is sized there and the weekdays share what is left. */
+.edit-grid thead th:first-child {
+  width: 72px;
+}
+
+.edit-grid th[scope="row"] {
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--ink);
+  vertical-align: top;
+  padding-top: 12px;
+  white-space: nowrap;
+}
+
+.edit-grid td {
+  vertical-align: top;
+  padding: 8px;
+  height: auto;
+}
+
+.edit-cell-tags {
+  margin-bottom: 6px;
+}
+
+/* Outside the coach's availability: the --dead fill and hatch the term ribbon
+   uses for weeks 4/8/12 (§3.1), so "nothing can happen here" reads the same
+   way everywhere in the app. */
+.edit-cell-off {
+  background: var(--dead);
+  background-image: repeating-linear-gradient(
+    45deg,
+    rgb(225 226 218 / 20%) 0 6px,
+    transparent 6px 12px
+  );
+}
+
+.edit-cell-note {
+  font: 400 13px/18px var(--ui);
+  color: var(--ink-3);
+}
+
+.edit-positions {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.edit-position {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  padding: 6px 8px;
+  background: var(--surface);
+  color: var(--ink);
+  font: 400 13px/18px var(--ui);
+}
+
+.edit-position-free {
+  border-style: dashed;
+  color: var(--ink-2);
+  background: var(--paper);
+}
+
+button.edit-position-taken {
+  cursor: pointer;
+}
+
+button.edit-position-taken:hover {
+  border-color: var(--action);
+}
+
+/* The picked-up student: --ok-tint fill with --action text, the same
+   "confirmed / selected" pair as the chips (§1, §3.5). The aria-pressed state
+   carries the same information, so this is never colour alone. */
+.edit-position-taken.is-selected,
+.edit-tray-item.is-selected {
+  background: var(--ok-tint);
+  border-color: var(--action);
+  color: var(--action);
+}
+
+.edit-position-name {
+  display: block;
+  font: 500 13px/18px var(--ui);
+}
+
+.edit-position-meta {
+  display: block;
+  color: var(--ink-2);
+}
+
+.edit-position-taken.is-selected .edit-position-meta {
+  color: var(--action);
+}
+
+.edit-target {
+  margin-top: 6px;
+  width: 100%;
+}
+
+.edit-tray-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 480px;
+  overflow: auto;
+}
+
+.edit-tray-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  padding: 8px 10px;
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+  font: 400 13px/18px var(--ui);
+}
+
+/* Listed, with the reason, but not a control: a student with no class block
+   cannot be placed (SPEC.md §17.4). */
+.edit-tray-item-off {
+  background: var(--paper);
+  color: var(--ink-2);
+  cursor: default;
+}
+
+.edit-tray-item:hover {
+  border-color: var(--action);
+}
+
+.edit-tray-item .chip {
+  margin-top: 4px;
+}
+
+.edit-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.edit-list li {
+  border-bottom: 1px solid var(--line-50);
+}
+
+.edit-list li:last-child {
+  border-bottom: 0;
+}
+
+.edit-entry {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 11px 0;
+}
+
+.edit-entry-index {
+  color: var(--ink-2);
+  min-width: 24px;
+}
+
+.edit-entry-body {
+  flex: 1;
+}
+
+.edit-entry-warnings {
+  margin-top: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* The per-coach note under a disabled calendar row (SPEC.md §7.4). */
+.calendar-note {
+  display: block;
+  margin: 2px 0 0;
+  max-width: 60ch;
+}
+
+.calendar-action {
+  text-align: right;
+}
+
+@media (max-width: 1180px) {
+  .edit-layout {
+    display: block;
+  }
+
+  .edit-tray-card {
+    margin-top: 20px;
+  }
 }
 
 /* ---------- §5 Quality floor ---------- */
