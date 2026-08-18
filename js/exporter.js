@@ -242,15 +242,16 @@ export function exportAppointments(appointments, mapping) {
 
 // ---- SPEC.md §7.3 — coach-assignments batch upload (auto-assign only) ----
 //
-// A fixed seven-column integration format, deliberately kept out of the §7.2
+// A fixed eight-column integration format, deliberately kept out of the §7.2
 // mapping editor: the receiving batch-upload template matches on header text
 // and constant values, so a user's renamed/reordered appointment columns must
 // not be able to reshape this file. One row per scheduled student, never one
 // per meeting.
 
-/** The seven headers, in the exact required order (SPEC.md §7.3). */
+/** The eight headers, in the exact required order (SPEC.md §7.3). */
 export const COACH_ASSIGNMENT_HEADERS = Object.freeze([
   'Student Name',
+  'Student Contact SF ID',
   'Record Type',
   'Record Type Name',
   'Type',
@@ -275,6 +276,18 @@ export const COACH_ASSIGNMENT_CONSTANTS = Object.freeze({
  */
 function coachSfIdOf(assignment) {
   const raw = assignment?.slot?.coachSfId;
+  return raw === undefined || raw === null ? '' : String(raw).trim();
+}
+
+/**
+ * The student's Salesforce contact id for an assignment (SPEC.md §3.3). Like
+ * `Coach User ID`, this is an existing input value rather than a new one: the
+ * student list already requires a non-blank, unique `Contact SF ID` on every
+ * row (§8), so the parser is the only validation this column needs and the
+ * export has no refusal path of its own for it.
+ */
+function contactSfIdOf(student) {
+  const raw = student?.contactSfId;
   return raw === undefined || raw === null ? '' : String(raw).trim();
 }
 
@@ -320,7 +333,7 @@ export function coachSfIdErrorMessage(coaches) {
  * mode), so identical inputs give an identical file.
  *
  * @param {Array<{student:object, coach:string, slot:object}>} assignments
- * @returns {Array<{studentName, recordType, recordTypeName, type, coachName, coachUserId, status}>}
+ * @returns {Array<{studentName, contactSfId, recordType, recordTypeName, type, coachName, coachUserId, status}>}
  */
 export function buildCoachAssignmentRows(assignments) {
   const rows = [];
@@ -336,6 +349,7 @@ export function buildCoachAssignmentRows(assignments) {
     seenStudents.add(key);
     rows.push({
       studentName: student.studentName || '',
+      contactSfId: contactSfIdOf(student),
       recordType: COACH_ASSIGNMENT_CONSTANTS.recordType,
       recordTypeName: COACH_ASSIGNMENT_CONSTANTS.recordTypeName,
       type: COACH_ASSIGNMENT_CONSTANTS.type,
@@ -351,6 +365,7 @@ export function buildCoachAssignmentRows(assignments) {
 export function buildCoachAssignmentAoa(assignments) {
   const rows = buildCoachAssignmentRows(assignments).map((row) => [
     row.studentName,
+    row.contactSfId,
     row.recordType,
     row.recordTypeName,
     row.type,

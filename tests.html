@@ -1642,9 +1642,10 @@ test('an auto-assign run produces a coach-assignments export', () => {
   assert(BU_AOA.length === BU_ROWS.length + 1, 'the sheet is a header row plus one row per student');
 });
 
-test('the seven headers appear in exactly the required order', () => {
+test('the eight headers appear in exactly the required order', () => {
   assertDeep(BU_AOA[0], [
     'Student Name',
+    'Student Contact SF ID',
     'Record Type',
     'Record Type Name',
     'Type',
@@ -1653,29 +1654,29 @@ test('the seven headers appear in exactly the required order', () => {
     'Status',
   ]);
   assertDeep([...COACH_ASSIGNMENT_HEADERS], BU_AOA[0], 'the exported constant matches the sheet');
-  BU_AOA.forEach((row, i) => assertEqual(row.length, 7, `row ${i} has exactly seven cells`));
+  BU_AOA.forEach((row, i) => assertEqual(row.length, 8, `row ${i} has exactly eight cells`));
 });
 
 test('Record Type is 0121Q000001Dw6tQAC on every row', () => {
   assert(BU_ROWS.length > 0, 'there are rows to check');
   BU_ROWS.forEach((row) => assertEqual(row.recordType, '0121Q000001Dw6tQAC', 'Record Type constant'));
-  BU_AOA.slice(1).forEach((row) => assertEqual(row[1], '0121Q000001Dw6tQAC'));
+  BU_AOA.slice(1).forEach((row) => assertEqual(row[2], '0121Q000001Dw6tQAC'));
   assertEqual(COACH_ASSIGNMENT_CONSTANTS.recordType, '0121Q000001Dw6tQAC');
 });
 
 test('Record Type Name is Institutional Relations on every row', () => {
   BU_ROWS.forEach((row) => assertEqual(row.recordTypeName, 'Institutional Relations'));
-  BU_AOA.slice(1).forEach((row) => assertEqual(row[2], 'Institutional Relations'));
+  BU_AOA.slice(1).forEach((row) => assertEqual(row[3], 'Institutional Relations'));
 });
 
 test('Type is coach on every row', () => {
   BU_ROWS.forEach((row) => assertEqual(row.type, 'coach'));
-  BU_AOA.slice(1).forEach((row) => assertEqual(row[3], 'coach'));
+  BU_AOA.slice(1).forEach((row) => assertEqual(row[4], 'coach'));
 });
 
 test('Status is current on every row', () => {
   BU_ROWS.forEach((row) => assertEqual(row.status, 'current'));
-  BU_AOA.slice(1).forEach((row) => assertEqual(row[6], 'current'));
+  BU_AOA.slice(1).forEach((row) => assertEqual(row[7], 'current'));
 });
 
 test('every scheduled student appears exactly once', () => {
@@ -1748,6 +1749,40 @@ test('no new coach input field is needed: the §3.2 columns alone populate Coach
   const rows = buildCoachAssignmentRows(run.assignments);
   assertEqual(rows.length, 1);
   assertEqual(rows[0].coachUserId, '005ZZ000009ZZZAA1');
+});
+
+test('Student Contact SF ID is exactly the student’s Contact SF ID', () => {
+  const idByName = new Map(BU_STUDENTS.map((student) => [student.studentName, student.contactSfId]));
+  BU_ROWS.forEach((row) => {
+    assertEqual(row.contactSfId, idByName.get(row.studentName), `${row.studentName} Contact SF ID`);
+    assert(row.contactSfId !== '', 'and it is never blank');
+  });
+  // And identical to the value the scheduler carried on the assignment.
+  BU_RUN.assignments.forEach(({ student }) => {
+    const row = BU_ROWS.find((r) => r.studentName === student.studentName);
+    assertEqual(row.contactSfId, student.contactSfId, 'Student Contact SF ID equals student.contactSfId');
+  });
+  const ids = BU_ROWS.map((row) => row.contactSfId);
+  assertEqual(new Set(ids).size, ids.length, 'one row per student means one id per row');
+  // Column 2 of the sheet, immediately after Student Name.
+  assertEqual(BU_AOA[0][1], 'Student Contact SF ID');
+  BU_AOA.slice(1).forEach((row, i) => assertEqual(row[1], BU_ROWS[i].contactSfId, `sheet row ${i + 1}`));
+});
+
+test('no new student input field is needed: the §3.3 columns alone populate Student Contact SF ID', () => {
+  // Exactly the SPEC.md §3.3 student shape — no studentContactSfId anywhere.
+  const studentRow = {
+    contactSfId: '003XX000004TmiQQAS',
+    studentName: 'Solo Student',
+    studentEmail: 'solo@example.com',
+  };
+  assert(!('studentContactSfId' in studentRow), 'the input shape has no batch-upload-specific field');
+  const availability = [avail('Coach S', 'Monday', '09:00', '11:00', '005SS000009SSSAA1', 's@example.com')];
+  const slots = buildSlots(availability, []);
+  const run = batchUploadRun([studentRow], slots, availability);
+  const rows = buildCoachAssignmentRows(run.assignments);
+  assertEqual(rows.length, 1);
+  assertEqual(rows[0].contactSfId, '003XX000004TmiQQAS');
 });
 
 test('unassigned students are excluded from the batch upload', () => {
@@ -1861,7 +1896,7 @@ test('the batch-upload filename is distinct and follows the timestamp convention
   assertEqual(buildCoachAssignmentsFilename(new Date(2026, 8, 7, 9, 5)), 'coach_assignments_2026-09-07_0905.xlsx');
 });
 
-test('a custom appointment mapping does not change the seven-column batch upload', () => {
+test('a custom appointment mapping does not change the eight-column batch upload', () => {
   const custom = [
     { ...createConstantColumn('Record Type', 'something else'), id: 'c1' },
     { id: 'coachName', type: 'field', field: 'coachName', header: 'Renamed coach', included: true },
@@ -1875,7 +1910,7 @@ test('a custom appointment mapping does not change the seven-column batch upload
   // built before the custom mapping existed.
   assertDeep(buildCoachAssignmentAoa(BU_RUN.assignments), BU_AOA);
   assertDeep(buildCoachAssignmentAoa(BU_RUN.assignments)[0], [...COACH_ASSIGNMENT_HEADERS]);
-  assertEqual(buildCoachAssignmentAoa(BU_RUN.assignments)[1][1], '0121Q000001Dw6tQAC', 'the constant is not overridden');
+  assertEqual(buildCoachAssignmentAoa(BU_RUN.assignments)[1][2], '0121Q000001Dw6tQAC', 'the constant is not overridden');
 });
 
 testWithXLSX('the generated workbook carries the exact headers and values', () => {
@@ -1888,6 +1923,7 @@ testWithXLSX('the generated workbook carries the exact headers and values', () =
   aoa.slice(1).forEach((row, i) => {
     assertDeep(row, [
       BU_ROWS[i].studentName,
+      BU_ROWS[i].contactSfId,
       '0121Q000001Dw6tQAC',
       'Institutional Relations',
       'coach',
@@ -1902,20 +1938,24 @@ testWithXLSX('Salesforce identifiers survive a write/read round-trip as text', (
   // An all-digit id is the case Excel would otherwise reformat as a number.
   const availability = [avail('Coach N', 'Monday', '09:00', '11:00', '0051234567890123', 'n@example.com')];
   const slots = buildSlots(availability, []);
-  const run = batchUploadRun(students(1, 'N'), slots, availability);
+  // The student's Contact SF ID is all digits too, for the same reason.
+  const numericStudent = [{ ...students(1, 'N')[0], contactSfId: '0012345678901234' }];
+  const run = batchUploadRun(numericStudent, slots, availability);
   const workbook = buildCoachAssignmentsWorkbook(run.assignments, 'auto');
   const sheet = workbook.Sheets['Coach Assignments'];
 
-  ['B2', 'F2'].forEach((address) => {
+  ['B2', 'C2', 'G2'].forEach((address) => {
     assertEqual(sheet[address].t, 's', `${address} is a text cell`);
     assertEqual(sheet[address].z, undefined, `${address} carries no number format`);
   });
 
   const roundTripped = XLSX.read(XLSX.write(workbook, { type: 'array', bookType: 'xlsx' }), { type: 'array' });
   const rows = XLSX.utils.sheet_to_json(roundTripped.Sheets['Coach Assignments'], { header: 1, raw: true });
-  assertEqual(rows[1][1], '0121Q000001Dw6tQAC', 'Record Type survives the round-trip unchanged');
-  assertEqual(rows[1][5], '0051234567890123', 'a numeric-looking Coach User ID keeps its leading zeros');
-  assertEqual(typeof rows[1][5], 'string', 'and stays a string');
+  assertEqual(rows[1][2], '0121Q000001Dw6tQAC', 'Record Type survives the round-trip unchanged');
+  assertEqual(rows[1][6], '0051234567890123', 'a numeric-looking Coach User ID keeps its leading zeros');
+  assertEqual(typeof rows[1][6], 'string', 'and stays a string');
+  assertEqual(rows[1][1], '0012345678901234', 'a numeric-looking Student Contact SF ID keeps its leading zeros too');
+  assertEqual(typeof rows[1][1], 'string', 'and stays a string');
 });
 
 testWithXLSX('an empty assignment list is refused rather than exported blank', () => {
@@ -3036,7 +3076,7 @@ test('the §7.1 appointment rows carry the new coach, with the default columns u
   );
 });
 
-test('the §7.3 batch upload names the coach the edit gave them, and keeps its seven columns', () => {
+test('the §7.3 batch upload names the coach the edit gave them, and keeps its eight columns', () => {
   const edit = move(ED_CTX, ED_PLACEMENTS, { contactSfId: 'E1', coach: 'Coach B', day: 'Tuesday', start: t('11:00') });
   const edited = buildEditedSchedule(ED, [edit.edit], ED_CTX);
   const rows = buildCoachAssignmentRows(edited.assignments);

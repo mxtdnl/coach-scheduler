@@ -1772,6 +1772,7 @@ function renderCoachAssignmentsExport(eng) {
                     (row) =>
                       `<tr>${[
                         row.studentName,
+                        row.contactSfId,
                         row.recordType,
                         row.recordTypeName,
                         row.type,

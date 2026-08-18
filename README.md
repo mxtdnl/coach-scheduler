@@ -547,12 +547,13 @@ you generated it).
 
 This file is a batch-upload template for Salesforce, and it is about
 **assignments, not meetings**: a student with four coaching meetings gets
-**one** row here, not four. It has seven columns, always these, always in this
+**one** row here, not four. It has eight columns, always these, always in this
 order:
 
 | Column | What it holds |
 |---|---|
 | Student Name | The student's name, as in your student list |
+| Student Contact SF ID | That student's **Contact SF ID** — the value already in your student list |
 | Record Type | Always `0121Q000001Dw6tQAC` — the Salesforce record type id |
 | Record Type Name | Always `Institutional Relations` |
 | Type | Always `coach` |
@@ -560,10 +561,12 @@ order:
 | Coach User ID | That coach's **Coach SF ID** — the value already in your coach availability file |
 | Status | Always `current` |
 
-**Coach User ID needs no new input.** It is the same Salesforce identifier as
-the **Coach SF ID** you already fill in on the coach availability template —
-only the heading differs, because that is what the batch upload calls it. There
-is no extra column to add and no extra file to prepare.
+**Neither identifier needs new input.** `Coach User ID` is the same Salesforce
+identifier as the **Coach SF ID** you already fill in on the coach availability
+template, and `Student Contact SF ID` is the **Contact SF ID** you already fill
+in on the student list — only the headings differ, because that is what the
+batch upload calls them. There is no extra column to add and no extra file to
+prepare.
 
 A few things worth knowing:
 
@@ -575,7 +578,7 @@ A few things worth knowing:
   file.
 - **Every student appears at most once.** No duplicates.
 - **The same list, every time.** Same inputs, same file, in the same order.
-- **Your custom appointment columns do not touch it.** The seven columns are
+- **Your custom appointment columns do not touch it.** The eight columns are
   fixed, because the system receiving the file expects exactly them.
 - **It only appears in auto-assign mode.** In pre-allocated mode you told the
   tool who coaches whom, so the card is not shown at all.
@@ -605,7 +608,7 @@ You can:
 
 The preview table above always shows what you will actually get, and your
 layout is remembered for next time. These settings apply to the **appointments**
-file only — the coach assignments file keeps its seven fixed columns whatever
+file only — the coach assignments file keeps its eight fixed columns whatever
 you do here.
 
 ### 7.4 The coach calendar download (one .ics file)
