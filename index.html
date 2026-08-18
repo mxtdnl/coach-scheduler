@@ -54,6 +54,12 @@
             <span class="stepper-label">Results</span>
           </button>
         </li>
+        <li>
+          <button type="button" class="stepper-item" data-step="export">
+            <span class="stepper-index">5</span>
+            <span class="stepper-label">Export</span>
+          </button>
+        </li>
       </ol>
       <p class="rail-note">Runs in your browser. Files are never uploaded to a server. <a href="https://www.flaticon.com/free-icons/calendar" title="calendar icons">Calendar icons created by SBTS2018 - Flaticon</a></p>
     </nav>
@@ -64,6 +70,8 @@
       <section class="step-panel" data-step="setup">
         <h1 class="page-title">Set up the term</h1>
         <p class="page-sub">Choose the term start date and how students are matched to coaches.</p>
+
+        <nav class="jump-bar" data-jump="setup" aria-label="Jump to a section on this page" hidden></nav>
 
         <div class="card">
           <h2>Term start date</h2>
@@ -131,6 +139,8 @@
         <h1 class="page-title">Upload files</h1>
         <p class="page-sub">Drag and drop each file, or click to choose one. Each file is checked as soon as it is read.</p>
 
+        <nav class="jump-bar" data-jump="upload" aria-label="Jump to a section on this page" hidden></nav>
+
         <div class="upload-toolbar">
           <button type="button" id="clear-uploads-btn" class="btn btn-destructive">Clear all uploads</button>
         </div>
@@ -197,6 +207,8 @@
         <h1 class="page-title">Review capacity</h1>
         <p class="page-sub" id="review-sub">Coach capacity and FTE for the 15 term weeks.</p>
 
+        <nav class="jump-bar" data-jump="review" aria-label="Jump to a section on this page" hidden></nav>
+
         <div class="ribbon-mount" data-ribbon="review"></div>
 
         <div class="review-toolbar">
@@ -214,6 +226,8 @@
         <h1 class="page-title">Edit the schedule</h1>
         <p class="page-sub" id="edit-sub">Move, place or swap a student's whole placement. No edit is required.</p>
 
+        <nav class="jump-bar" data-jump="edit" aria-label="Jump to a section on this page" hidden></nav>
+
         <div class="ribbon-mount" data-ribbon="edit"></div>
 
         <!-- Announces the result of every placement, including a refusal and
@@ -221,18 +235,34 @@
         <p id="edit-live" class="visually-hidden" role="status" aria-live="polite"></p>
 
         <div id="edit-content"></div>
-
-        <div id="edit-bookings-mount"></div>
       </section>
 
       <!-- Step 5: Results -->
       <section class="step-panel" data-step="results" hidden>
         <h1 class="page-title">Results</h1>
-        <p class="page-sub" id="results-sub">The schedule, exceptions, and export appear here.</p>
+        <p class="page-sub" id="results-sub">The schedule, exceptions, and bookings appear here.</p>
+
+        <nav class="jump-bar" data-jump="results" aria-label="Jump to a section on this page" hidden></nav>
 
         <div class="ribbon-mount" data-ribbon="results"></div>
 
         <div id="results-content"></div>
+
+        <!-- SPEC.md §14: the Bookings card. It sat on Results in v1.5, moved to
+             Edit in v1.9, and comes back to Results here so Edit holds only the
+             tools that change a placement. -->
+        <div id="results-bookings-mount"></div>
+      </section>
+
+      <!-- Step 6: Export (SPEC.md §7) — every file the run produces, and the
+           settings that shape them, on one page. -->
+      <section class="step-panel" data-step="export" hidden>
+        <h1 class="page-title">Export</h1>
+        <p class="page-sub" id="export-sub">The files this run produces, and the column layout they use.</p>
+
+        <nav class="jump-bar" data-jump="export" aria-label="Jump to a section on this page" hidden></nav>
+
+        <div id="export-content"></div>
 
         <div class="card" id="export-settings-card">
           <h2>

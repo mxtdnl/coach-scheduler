@@ -153,9 +153,9 @@ A single page with a stepper:
 1. **Setup** — start date picker (with Monday normalisation notice), campus selector (§6.1), mode toggle, template download links.
 2. **Upload** — drag-and-drop or file pickers for the 3 (or 4) files, with per-file validation results shown immediately (row counts, errors with row numbers).
 3. **Review** — a **Class blocks** card (§6.3); FTE editor (auto mode only); a capacity summary table (coach, valid slots, capacity, FTE, quota); warnings.
-4. **Edit** — the manual-editing step (§17): a coach-at-a-time **Coach grid** of (coach, slot) cells, an **Unassigned students** tray, an **Edits (N)** list with per-edit undo, and the **Bookings** card for inspecting the schedule by coach or by student (§14). The step **appears once a schedule has been generated** and requires no edits: a **Continue to Results** action always proceeds.
-5. **Results** — summary (students scheduled / unassigned, per-coach utilisation), a **Class blocks** card (§6.4), an unassigned-students table with reasons (including each student's class block), a preview of the first 50 appointment rows with the **Export appointments** button, a **Coach calendars** card with one row and one `.ics` download per coach plus an **Export all coaches** control (§7.4), and — in auto-assign mode only — a **Coach assignments** card with the **Export coach assignments** button (§7.3). Results carries no bookings view: that moved to Edit in v1.9. The run therefore produces **two** spreadsheet export files in auto-assign mode and one in pre-allocated mode, plus the per-coach calendar files on demand.
-6. **Export settings** (collapsible panel) — see §7.
+4. **Edit** — the manual-editing step (§17): an **Unassigned students** tray, a coach-at-a-time **Coach grid** of (coach, slot) cells **below it**, and an **Edits (N)** list with per-edit undo. The tray sits **above** the grid, full width, rather than beside it (v1.10), so the reading order matches the action — pick a student up, then put them down — and the grid keeps the whole column for its weekday columns. The step **appears once a schedule has been generated** and requires no edits: a **Continue to Results** action always proceeds. Edit carries no bookings view and no export control: the run's outcome is read on Results and its files are produced on Export.
+5. **Results** — summary (students scheduled / unassigned, per-coach utilisation), a **Class blocks** card (§6.4), an unassigned-students table with reasons (including each student's class block), and the **Bookings** card for inspecting the schedule by coach or by student (§14). Results is where the run is read, not where it is written: it carries no preview, no export button and no export settings.
+6. **Export** — every file the run produces, on one page: a preview of the first 50 appointment rows with the **Export appointments** button, a **Coach calendars** card with one row and one `.ics` download per coach plus an **Export all coaches** control (§7.4), in auto-assign mode only a **Coach assignments** card with the **Export coach assignments** button (§7.3), and the **Export settings** collapsible panel (§7.2). The run therefore produces **two** spreadsheet export files in auto-assign mode and one in pre-allocated mode, plus the per-coach calendar files on demand.
 
 All errors must be human-readable and name the file, row, and problem. The app must never fail silently.
 
@@ -164,6 +164,19 @@ All errors must be human-readable and name the file, row, and problem. The app m
 A run covers exactly one location. The Setup step offers a campus selector — **London** (`Europe/London`), **Boston** (`America/New_York`), **Dubai** (`Asia/Dubai`) — defaulting to London and persisted to localStorage. Uploaded times are naive wall-clock times at that campus, so the scheduling engine keeps working in minutes-since-midnight exactly as before; the campus zone is applied only when building the export instants (§7.1).
 
 This is what makes every class timetable safe to compare against every coach's availability: one campus per run means one zone, so naive minute arithmetic is never comparing times from two different zones. Class blocks are cohorts, not locations — they do not change the run's campus or zone.
+
+### 6.2 The "Jump to" bar (v1.10, normative)
+
+Every step opens with a horizontal **Jump to** bar directly beneath the page
+title and its one-line description, above the term ribbon. It holds one
+in-page link per card currently on that page, in the order the cards appear,
+labelled with the card's own heading. It is built from the rendered page rather
+than written by hand, so a card that is hidden or absent for the current mode
+or run is absent from the bar too, and the bar is **not shown at all** when a
+page has fewer than two cards — a single link is not navigation. It is
+navigation, not a card: it takes the page background with one rule beneath it
+(DESIGN.md §3.2 keeps the 10px-radius card language for cards only), and its
+links use `--action`, the one interactive colour.
 
 ### 6.3 Class blocks on Review
 
@@ -619,11 +632,13 @@ tests.html must exercise the real exporter functions and assert at least:
 
 Workbook assertions need SheetJS; when the CDN is unreachable those tests report as **skipped** rather than failed, and the pure data-builder tests still run.
 
-## 14. Booking views (v1.5; moved to the Edit step in v1.9, normative)
+## 14. Booking views (v1.5; moved to Edit in v1.9, back to Results in v1.10, normative)
 
-A **Bookings** card on the **Edit** step (§17), below the coach grid. It moved
-there wholesale in v1.9 — both views, with their content, empty states and
-accessibility rules unchanged. Results no longer carries a bookings view.
+A **Bookings** card on the **Results** step, below the unassigned-students
+table. It moved to Edit wholesale in v1.9 and back to Results in v1.10 — both
+times with its content, empty states and accessibility rules unchanged. Edit no
+longer carries a bookings view: Edit holds only what changes a placement, and
+Results is where the finished schedule is read.
 
 **Not read-only any more (v1.9).** Until v1.9 this section opened by declaring
 the card a read-only inspection view that "adds no editing of appointments".
@@ -643,7 +658,7 @@ input or any edit changes.
 not a switch), a selector for the chosen side, and one results panel. Nothing
 is listed before a selection is made, so a run with thousands of students
 renders nothing until a coach or student is chosen. The §7.4 `.ics` control is
-**not** here: it stayed on Results, in its own **Coach calendars** card.
+**not** here: it lives on the Export step, in its own **Coach calendars** card.
 
 ### 14.1 Coach view
 
@@ -809,8 +824,9 @@ operation in §17.3 can produce one.
 
 ### 17.2 The coach grid
 
-One coach at a time. A **coach selector** chooses whose week is shown, then a
-**grid** whose rows are start times and whose columns are weekdays. Each cell
+Below the unassigned-students tray, full width (§6). One coach at a time. A
+**coach selector** chooses whose week is shown, then a **grid** whose rows are
+start times and whose columns are weekdays. Each cell
 is one **(coach, slot)** pair and holds up to **three positions**, one per
 offset (§4.5). Every position shows the **student's name**, the **offset**, and
 the **term weeks that offset produces** (§4.2).
