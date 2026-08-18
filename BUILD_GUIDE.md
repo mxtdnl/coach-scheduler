@@ -154,6 +154,8 @@ Run after Session 8. Replace `SPEC.md` with the v1.4 version before starting.
 
 **Verify:** run auto-assign with several coaches and students and confirm the downloaded workbook has exactly the seven headers in order, one row per scheduled student (a student with four meetings appears once), Coach User ID identical to that coach's Coach SF ID, and every cell stored as text; confirm unassigned students are absent; switch to pre-allocated mode and confirm the card and button are not shown; change the appointment export mapping and confirm the batch upload is unchanged; tests.html all green.
 
+> **Amended by v1.10.** The file now has **eight** columns, not seven: `Student Contact SF ID` sits in position 2, immediately after `Student Name`, and carries the student's existing `Contact SF ID` from the student list (SPEC.md §3.3). Like `Coach User ID`, it is an export heading over an input value that already exists — no new input field, no new template column and no new validation, the student list parser having already required a non-blank, unique id. Building from scratch today, do Session 9 with the eight-column set from SPEC.md §7.3.
+
 
 ### Session 10 — Results booking views and the coach calendar (v1.5)
 

@@ -1,6 +1,6 @@
 # Coaching Meeting Scheduler — Technical Specification
 
-Version 1.9 — 13 August 2026 (§17 adds a manual **Edit** step between Review and Results: a coach-at-a-time grid and an unassigned tray from which a student's whole placement can be moved, placed or swapped, with hard refusals, soft warnings, an edits list and per-edit undo; §6 inserts Edit into the step list; §14 the Bookings card **moves from Results to Edit** and is no longer read-only; §7.4 the coach calendar becomes a dedicated **Coach calendars** card on Results — one row per coach, plus an "Export all coaches" control — instead of a control nested in the Bookings card; §10 is narrowed to editing a single dated occurrence; §5.1's quota and §4.7's day balance are stated as binding the automatic pass, with a manual breach warning rather than refusing; v1.8 made §4.7 a coach's meetings **spread as evenly as possible across the days that coach has valid slots on**, instead of piling onto their earliest days; §4.6, §5.1 and §5.2 restate the assignment order accordingly and §11.3 states explicitly that it does not re-balance days; v1.7 made §3.1 the class-block total **13.5 hours** with anything else a **warning** rather than a rejection — the file uploads and schedules; v1.6 made §7.4 the coach calendar export a **single `.ics` file per coach**, holding one `VEVENT` per meeting, replacing the v1.5 ZIP of one file per meeting; v1.5 added §14/§15 the Results booking views — by coach and by student — and the coach calendar export itself; §7.3/§13 the auto-assign coach-assignments batch upload from v1.4; §3.1/§4.4a/§5.3 multiple class blocks from v1.3; §6.1 Campus and §7.1 export columns from v1.2; §11 Blocked weeks/dates from v1.1)
+Version 1.10 — 18 August 2026 (§7.3/§13 add a second column to the coach-assignments batch upload: **Student Contact SF ID**, in position 2 immediately after `Student Name`, carrying the student's existing `Contact SF ID` (§3.3) — an eight-column file now, with no new input field, no new template column and no new validation; v1.9's §17 adds a manual **Edit** step between Review and Results: a coach-at-a-time grid and an unassigned tray from which a student's whole placement can be moved, placed or swapped, with hard refusals, soft warnings, an edits list and per-edit undo; §6 inserts Edit into the step list; §14 the Bookings card **moves from Results to Edit** and is no longer read-only; §7.4 the coach calendar becomes a dedicated **Coach calendars** card on Results — one row per coach, plus an "Export all coaches" control — instead of a control nested in the Bookings card; §10 is narrowed to editing a single dated occurrence; §5.1's quota and §4.7's day balance are stated as binding the automatic pass, with a manual breach warning rather than refusing; v1.8 made §4.7 a coach's meetings **spread as evenly as possible across the days that coach has valid slots on**, instead of piling onto their earliest days; §4.6, §5.1 and §5.2 restate the assignment order accordingly and §11.3 states explicitly that it does not re-balance days; v1.7 made §3.1 the class-block total **13.5 hours** with anything else a **warning** rather than a rejection — the file uploads and schedules; v1.6 made §7.4 the coach calendar export a **single `.ics` file per coach**, holding one `VEVENT` per meeting, replacing the v1.5 ZIP of one file per meeting; v1.5 added §14/§15 the Results booking views — by coach and by student — and the coach calendar export itself; §7.3/§13 the auto-assign coach-assignments batch upload from v1.4; §3.1/§4.4a/§5.3 multiple class blocks from v1.3; §6.1 Campus and §7.1 export columns from v1.2; §11 Blocked weeks/dates from v1.1)
 
 ## 1. Purpose
 
@@ -253,17 +253,18 @@ When no student was assigned a coach, the control is present but disabled.
 | # | Column | Value |
 |---|---|---|
 | 1 | `Student Name` | the scheduled student's name |
-| 2 | `Record Type` | constant `0121Q000001Dw6tQAC` |
-| 3 | `Record Type Name` | constant `Institutional Relations` |
-| 4 | `Type` | constant `coach` |
-| 5 | `Coach Name` | the coach the scheduler assigned |
-| 6 | `Coach User ID` | that coach's existing **Coach SF ID** (§3.2) |
-| 7 | `Status` | constant `current` |
+| 2 | `Student Contact SF ID` | that student's existing **Contact SF ID** (§3.3) |
+| 3 | `Record Type` | constant `0121Q000001Dw6tQAC` |
+| 4 | `Record Type Name` | constant `Institutional Relations` |
+| 5 | `Type` | constant `coach` |
+| 6 | `Coach Name` | the coach the scheduler assigned |
+| 7 | `Coach User ID` | that coach's existing **Coach SF ID** (§3.2) |
+| 8 | `Status` | constant `current` |
 
 This is a **fixed integration format**. It is deliberately outside the §7.2
 mapping editor: the user's renamed, reordered, excluded or constant appointment
 columns must not be able to reshape this file, and no §7.2 setting changes any
-of the seven headers or four constants.
+of the eight headers or four constants.
 
 **Coach User ID = Coach SF ID (normative).** `Coach User ID` is an *export
 header name only*. The underlying value is the existing `Coach SF ID` from the
@@ -272,6 +273,16 @@ read from the assignment's slot at export time. There is **no** new coach input
 field, and no new column in the coach availability template. All existing
 `Coach SF ID` parsing and validation (§8: required, non-blank, identical on
 every row for a coach) is unchanged and is the only validation this column has.
+
+**Student Contact SF ID = Contact SF ID (normative, v1.10).** The same rule on
+the student side. The value is the existing `Contact SF ID` from the student
+list (§3.3), carried on the student object the scheduler assigned and read from
+the assignment at export time. There is **no** new student input field and no
+new column in the student list template. All existing `Contact SF ID` parsing
+and validation (§8: required, non-blank, unique across the file) is unchanged
+and is the only validation this column has — the parser having already refused
+a blank or duplicated id, the export needs no refusal path of its own for it,
+unlike `Coach User ID` above.
 
 **One row per student (normative).**
 
@@ -586,7 +597,7 @@ tests.html must exercise the real engine and the real parser rules, and assert a
 tests.html must exercise the real exporter functions and assert at least:
 
 1. An auto-assign run produces the second export.
-2. The output has exactly the seven §7.3 headers, in exactly that order, and every row has seven cells.
+2. The output has exactly the eight §7.3 headers, in exactly that order, and every row has eight cells.
 3. `Record Type` is `0121Q000001Dw6tQAC` on every row.
 4. `Record Type Name` is `Institutional Relations` on every row.
 5. `Type` is `coach` on every row.
@@ -596,13 +607,15 @@ tests.html must exercise the real exporter functions and assert at least:
 9. The exported coach is the student's actual final assigned coach, with more than one coach in play.
 10. `Coach User ID` exactly equals the source `Coach SF ID`, both as uploaded and as carried on the slot.
 11. No new coach input field is needed: an availability row carrying only the §3.2 columns populates `Coach User ID`.
-12. Unassigned students are excluded.
-13. A missing or blank `Coach SF ID` is detected, names the coach, and refuses the export.
-14. Output is deterministic, and row order follows the scheduler's assignment order.
-15. Pre-allocated mode does not produce the export (both entry points refuse).
-16. The §7.1 appointments export is unchanged — default columns and filename.
-17. A custom §7.2 appointment mapping does not change the seven-column batch upload.
-18. The generated workbook carries the exact headers and values, and Salesforce identifiers survive a write/read round-trip as text (including an all-digit id keeping its leading zeros).
+12. `Student Contact SF ID` (v1.10) exactly equals the student's source `Contact SF ID`, is never blank, sits in column 2, and is unique per row.
+13. No new student input field is needed: a student row carrying only the §3.3 columns populates `Student Contact SF ID`.
+14. Unassigned students are excluded.
+15. A missing or blank `Coach SF ID` is detected, names the coach, and refuses the export.
+16. Output is deterministic, and row order follows the scheduler's assignment order.
+17. Pre-allocated mode does not produce the export (both entry points refuse).
+18. The §7.1 appointments export is unchanged — default columns and filename.
+19. A custom §7.2 appointment mapping does not change the eight-column batch upload.
+20. The generated workbook carries the exact headers and values, and Salesforce identifiers survive a write/read round-trip as text (including an all-digit id keeping its leading zeros) — the student's and the coach's alike.
 
 Workbook assertions need SheetJS; when the CDN is unreachable those tests report as **skipped** rather than failed, and the pure data-builder tests still run.
 
@@ -954,5 +967,5 @@ at least:
 6. Undo restores the previous schedule exactly, and "reset all" restores the unedited one.
 7. Regeneration clears the edits: an edited schedule rebuilt from changed inputs carries no edit.
 8. All §9 and §11.5 invariants hold over an **edited** schedule: 4 meetings per assigned student, nothing in weeks 4/8/12, no coach double-booked, no overlap with the student's own class block, nothing on a blocked coach-week or coach-date.
-9. The exports reflect edits with **unchanged column sets**: the §7.1 appointment rows carry the new coach and instants, the §7.3 batch upload names the new coach and keeps its seven headers, and the §7.4 calendar puts the meeting in the new coach's file and not the old one's.
+9. The exports reflect edits with **unchanged column sets**: the §7.1 appointment rows carry the new coach and instants, the §7.3 batch upload names the new coach and keeps its eight headers, and the §7.4 calendar puts the meeting in the new coach's file and not the old one's.
 10. An unedited student is untouched by another student's edit, including a §11.3 rescheduled row keeping its `Rescheduled From Week`.
