@@ -218,7 +218,12 @@ Only needed in **pre-allocated** mode. One row per student.
 
 The steps run down the side of the page. You can click back and forth between
 them freely; nothing is lost. **Edit** only appears once there is a schedule to
-edit, so before that there are four.
+edit, so before that there are five.
+
+Every step opens with a **Jump to** bar: one link per card on that page, in the
+order they appear. On the longer pages it saves scrolling to find the table you
+want; on a page with only one card there is nothing to jump between, so the bar
+is not shown.
 
 ### Step 1 — Setup
 
@@ -297,17 +302,27 @@ nothing here. It is where you overrule the scheduler by hand — see
   with their class block and the reason, plus any single meeting that could not be moved around a
   blocked week or date (see [section 8](#8-blocked-weeks-and-dates)). If
   everyone fits, it says so.
+- **Bookings** — look the schedule up by coach or by student, see
+  [section 4b](#bookings-look-the-schedule-up-by-coach-or-by-student).
+
+### Step 6 — Export
+
+Everything the run produces as a file, on one page.
+
 - **Appointments** — a preview of the first 50 rows, in exactly the columns
-  your export will have.
-- **Export appointments** — downloads the spreadsheet, named
-  `appointments_2026-09-01_1430.xlsx` (the date and time you generated it).
+  your export will have, with **Export appointments** beside it. The
+  spreadsheet is named `appointments_2026-09-01_1430.xlsx` (the date and time
+  you generated it).
 - **Coach calendars** — one row per coach with their meeting count and a
   **Download .ics** button, plus **Export all coaches** to download the lot
   (see [section 7.4](#74-the-coach-calendar-download-one-ics-file)).
-- **Coach assignments** (auto-assign only) — a second card with its own
-  **Export coach assignments** button, giving one row per student and the coach
-  they were assigned. It is a different file from the appointments export; see
+- **Coach assignments** (auto-assign only) — its own card with an **Export
+  coach assignments** button, giving one row per student and the coach they
+  were assigned. It is a different file from the appointments export; see
   [section 7](#7-the-export-files).
+- **Export settings** — the collapsible panel that decides the appointment
+  file's columns (see
+  [section 7.3](#73-changing-the-appointment-export-columns)).
 
 By default the export has these columns, sorted by date, then start time, then
 coach:
@@ -393,7 +408,7 @@ export marks an edited row — an edit is visible on screen only.
 
 ### Bookings: look the schedule up by coach or by student
 
-The **Bookings** card at the bottom of the Edit step answers the two questions
+The **Bookings** card at the bottom of the Results step answers the two questions
 the big appointments table is bad at: *who is this coach meeting?* and *what
 does this student's term actually look like?* It shows the schedule as it
 stands, edits included, and nothing is listed until you choose somebody.
@@ -534,13 +549,13 @@ They are separate downloads with separate buttons; none replaces the other.
 
 ### 7.1 The appointments export
 
-Press **Export appointments** in the Results step. This is the file described
-in [section 4](#step-4--results), and you can reshape its columns — see
+Press **Export appointments** in the Export step. This is the file described
+in [section 4](#step-6--export), and you can reshape its columns — see
 [7.3](#73-changing-the-appointment-export-columns).
 
 ### 7.2 The coach assignments export (auto-assign only)
 
-At the bottom of the Results step, the **Coach assignments** card shows exactly
+On the Export step, the **Coach assignments** card shows exactly
 what this file will contain, with an **Export coach assignments** button beside
 it. It downloads `coach_assignments_2026-09-01_1430.xlsx` (the date and time
 you generated it).
@@ -590,7 +605,7 @@ A few things worth knowing:
 
 ### 7.3 Changing the appointment export columns
 
-Open **Export settings** at the bottom of the Results step if the default
+Open **Export settings** at the bottom of the Export step if the default
 columns are not the shape you need — for example when the file has to match a
 bulk-upload template.
 
@@ -613,7 +628,7 @@ you do here.
 
 ### 7.4 The coach calendar download (one .ics file)
 
-On the Results step, the **Coach calendars** card lists every coach with the
+On the Export step, the **Coach calendars** card lists every coach with the
 number of meetings they have and a **Download .ics** button of their own. Press
 one and it downloads `ada-lovelace_calendar_2026-09-01_1430.ics` — the coach's
 name, then the date and time you generated it.
@@ -798,7 +813,7 @@ These appear as a banner at the top of the page and can be dismissed.
 | **There is nothing to export: no student was assigned a coach.** | You pressed *Export coach assignments* on a run where nobody was scheduled. | Check the Unassigned students table for the reason. |
 | **The coach assignments export needs a Coach SF ID for every assigned coach.** | A coach in the schedule has no Coach SF ID, so their Coach User ID would be blank. | The message names the coach. Put their Coach SF ID in the coach availability file and upload it again. |
 | **The coach assignments export is only available in auto-assign mode.** | The second export does not apply in pre-allocated mode, where you supplied the pairings yourself. | Nothing to do — the appointments export still works as usual. |
-| **Choose a coach before exporting a calendar.** | You pressed *Export coach calendar (.ics)* with no coach chosen in the Bookings card. | Pick a coach from the list; the button stays greyed out until you do. |
+| **Choose a coach before exporting a calendar.** | You pressed *Export coach calendar (.ics)* with no coach chosen in the Coach calendars card. | Pick a coach from the list; the button stays greyed out until you do. |
 | **&lt;Coach&gt; has no scheduled meetings, so there is nothing to export.** | The coach you chose ended up with no meetings, so the calendar file would be empty. | Choose a coach who has meetings, or check the Unassigned students table to see why this one has none. |
 | **All columns are excluded. Include at least one in Export settings.** | Every export column has been unticked, so there is nothing to write. This one appears in the Appointments table, and the Export button is greyed out until you fix it. | Tick at least one column, or press *Reset to defaults*. |
 | **This setting could not be saved for next time…** | The browser is refusing to store settings — usually private browsing, or storage turned off. | Nothing is broken; the tool works normally, it just will not remember your settings after a reload. |

@@ -209,6 +209,59 @@ a:hover {
   margin: 4px 0 24px;
 }
 
+/* ---------- "Jump to" bar ----------
+   One horizontal row of in-page links, one per card on the page. It is
+   navigation, not a card, so it takes the paper background with a single rule
+   under it and stays out of the 10px-radius card language (DESIGN.md §3.2).
+   Links are --action, the one interactive colour (§1). */
+
+.jump-bar {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin: 0 0 24px;
+  padding: 0 0 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.jump-bar-label {
+  font: 500 13px/18px var(--ui);
+  color: var(--ink-2);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.jump-bar-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.jump-bar-link {
+  display: inline-block;
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  background: var(--surface);
+  color: var(--action);
+  font: 500 13px/18px var(--ui);
+  text-decoration: none;
+}
+
+.jump-bar-link:hover {
+  border-color: var(--action);
+}
+
+/* The heading a jump link lands on should not sit flush against the top of
+   the viewport. */
+.card[id] {
+  scroll-margin-top: 24px;
+}
+
 /* ---------- §3.1 Term ribbon ---------- */
 
 .ribbon {
@@ -1122,22 +1175,17 @@ input[type="search"] {
 
 /* ---------- The Edit step (SPEC.md §17) ---------- */
 
-/* Grid and tray sit side by side as two peer cards — DESIGN.md §3.2 allows no
-   card nesting, so the tray is its own card rather than a panel inside the
-   grid's. Below 1180px they stack. */
+/* Tray above grid, as two stacked peer cards — DESIGN.md §3.2 allows no card
+   nesting, so the tray is its own card rather than a panel inside the grid's.
+   Stacking puts them in the order they are used (pick a student up, put them
+   down) and gives the grid the full column width for its weekday columns. */
 .edit-layout {
-  display: flex;
-  align-items: flex-start;
-  gap: 20px;
+  display: block;
 }
 
-.edit-grid-card {
-  flex: 1 1 640px;
-  min-width: 0;
-}
-
+.edit-grid-card,
 .edit-tray-card {
-  flex: 0 0 300px;
+  min-width: 0;
 }
 
 .edit-grid-card .field {
@@ -1256,20 +1304,23 @@ button.edit-position-taken:hover {
   width: 100%;
 }
 
+/* The tray is a full-width row above the grid, so its students lay out as a
+   wrapping grid of cards rather than one tall column. */
 .edit-tray-list {
   list-style: none;
   padding: 0;
   margin: 0;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   gap: 8px;
-  max-height: 480px;
+  max-height: 320px;
   overflow: auto;
 }
 
 .edit-tray-item {
   display: block;
   width: 100%;
+  height: 100%;
   text-align: left;
   border: 1px solid var(--line);
   border-radius: var(--radius-control);
@@ -1346,15 +1397,6 @@ button.edit-position-taken:hover {
   text-align: right;
 }
 
-@media (max-width: 1180px) {
-  .edit-layout {
-    display: block;
-  }
-
-  .edit-tray-card {
-    margin-top: 20px;
-  }
-}
 
 /* ---------- §5 Quality floor ---------- */
 
@@ -1368,6 +1410,7 @@ button.edit-position-taken:hover {
   .wk,
   .dropzone,
   .toggle-option,
+  .jump-bar-link,
   input,
   select,
   .stepper-item {

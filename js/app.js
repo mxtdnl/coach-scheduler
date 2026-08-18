@@ -95,8 +95,9 @@ installGlobalErrorHandlers();
 
 // SPEC.md §6 — Edit sits between Review and Results. It is only offered once a
 // schedule exists (§17), and it never has to be used: Continue always goes on
-// to Results.
-const STEPS = ['setup', 'upload', 'review', 'edit', 'results'];
+// to Results. Export is the last step: every file the run produces, plus the
+// column layout they are written with (§7).
+const STEPS = ['setup', 'upload', 'review', 'edit', 'results', 'export'];
 
 // Parsed upload data lives only in memory (state.uploads) for the session —
 // per SPEC.md §2 it must never be written to localStorage.
@@ -290,6 +291,7 @@ function handleModeChange(mode) {
       state.mode = mode;
       setMode(mode);
       pairingsUploadCard.hidden = mode !== 'pre-allocated';
+      renderJumpBar('upload');
       refreshComputedSteps();
     },
     () => {
@@ -1467,6 +1469,59 @@ function renderWarningsCard() {
     </div>`;
 }
 
+// ---- The "Jump to" bar ----
+//
+// A horizontal strip at the top of every step, one link per card on that
+// page. The cards are rendered from data and change with the run, so the bar
+// is built from the DOM after each render rather than being written by hand:
+// whatever is on the page is what it lists. It hides itself when a page has
+// fewer than two cards, because a single link is not navigation.
+
+/** Turns a card heading into a stable, unique id for its jump-link target. */
+function jumpTargetId(step, text, index) {
+  const slug = text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return `jump-${step}-${slug || 'section'}-${index + 1}`;
+}
+
+/**
+ * Rebuilds the jump bar for one step from the cards currently in its panel.
+ * Safe to call on every render: it is idempotent and touches nothing else.
+ */
+function renderJumpBar(step) {
+  const panel = document.querySelector(`.step-panel[data-step="${step}"]`);
+  const bar = document.querySelector(`.jump-bar[data-jump="${step}"]`);
+  if (!panel || !bar) return;
+
+  const links = [];
+  panel.querySelectorAll('.card').forEach((card, index) => {
+    if (card.hidden) return;
+    const heading = card.querySelector('h2');
+    if (!heading) return;
+    // Decorative bits inside a heading (the Export settings caret) are marked
+    // aria-hidden, so they are dropped here for the same reason.
+    const label = heading.cloneNode(true);
+    label.querySelectorAll('[aria-hidden="true"]').forEach((el) => el.remove());
+    const text = label.textContent.replace(/\s+/g, ' ').trim();
+    if (!text) return;
+    if (!card.id) card.id = jumpTargetId(step, text, index);
+    links.push({ id: card.id, text });
+  });
+
+  if (links.length < 2) {
+    bar.hidden = true;
+    bar.replaceChildren();
+    return;
+  }
+
+  bar.innerHTML = `<span class="jump-bar-label">Jump to</span><ul class="jump-bar-list">${links
+    .map((link) => `<li><a class="jump-bar-link" href="#${escapeHtml(link.id)}">${escapeHtml(link.text)}</a></li>`)
+    .join('')}</ul>`;
+  bar.hidden = false;
+}
+
 function renderReview(engine) {
   const container = document.getElementById('review-content');
   if (!container) throw new Error('The page is missing the "review-content" element.');
@@ -1481,6 +1536,7 @@ function renderReview(engine) {
     );
     parts.push(renderWarningsCard());
     container.innerHTML = parts.join('');
+    renderJumpBar('review');
     return;
   }
 
@@ -1512,6 +1568,7 @@ function renderReview(engine) {
   parts.push(renderWarningsCard());
 
   container.innerHTML = parts.join('');
+  renderJumpBar('review');
 
   if (state.mode === 'auto') attachFteInputHandlers();
 }
@@ -2429,7 +2486,6 @@ function renderEditsListCard() {
 function renderEditStep(engine) {
   const container = document.getElementById('edit-content');
   const sub = document.getElementById('edit-sub');
-  const bookings = document.getElementById('edit-bookings-mount');
   if (!container || !sub) throw new Error('The page is missing the edit content elements.');
 
   if (!engine || !hasResultsInputs() || engine.appointments.length === 0) {
@@ -2439,7 +2495,7 @@ function renderEditStep(engine) {
         ? blockedExplanation()
         : 'No appointments were scheduled, so there is nothing to edit yet.'
     )}</p></div></div>`;
-    if (bookings) bookings.replaceChildren();
+    renderJumpBar('edit');
     return;
   }
 
@@ -2454,15 +2510,18 @@ function renderEditStep(engine) {
         state.edits.length === 1 ? '' : 's'
       }. No edit is required — Continue to Results always works.`;
 
+  // The tray sits above the grid, not beside it: a student is picked up there
+  // and put down in the grid, so the reading order matches the action, and the
+  // grid gets the full column width for its weekday columns.
   container.innerHTML = `
     <div class="edit-layout">
-      ${renderEditGridCard(eng, selection)}
       ${renderEditTrayCard(eng, selection)}
+      ${renderEditGridCard(eng, selection)}
     </div>
     ${renderEditsListCard()}`;
 
   attachEditHandlers(eng);
-  guard('showing the bookings', () => renderBookingsSection(eng));
+  renderJumpBar('edit');
 
   // The card was rebuilt under the user's hands, so put focus back where they
   // left it (DESIGN.md §5: keyboard-complete).
@@ -2767,7 +2826,7 @@ function fillStudentOptions(eng) {
  * Results on every keystroke.
  */
 function renderBookingsSection(eng) {
-  const mount = document.getElementById('edit-bookings-mount');
+  const mount = document.getElementById('results-bookings-mount');
   if (!mount) return;
 
   const isStudentView = state.bookings.view === 'student';
@@ -2778,7 +2837,7 @@ function renderBookingsSection(eng) {
   card.className = 'card';
   card.innerHTML = `
     <h2 id="bookings-heading">Bookings</h2>
-    <p class="help-text">Look up the schedule from either side: a coach's students, or a student's week. It shows the schedule as it stands, including any edit made above.</p>
+    <p class="help-text">Look up the schedule from either side: a coach's students, or a student's week. It shows the schedule as it stands, including every edit made on the Edit step.</p>
     <div class="toggle-group bookings-toggle" role="radiogroup" aria-labelledby="bookings-heading">
       <label class="toggle-option">
         <input type="radio" name="bookings-view" value="coach"${isStudentView ? '' : ' checked'} />
@@ -2884,11 +2943,15 @@ function renderResults(engine) {
   const sub = document.getElementById('results-sub');
   if (!container || !sub) throw new Error('The page is missing the results content elements.');
 
+  const bookingsMount = document.getElementById('results-bookings-mount');
+
   if (!hasResultsInputs() || !engine) {
-    sub.textContent = 'The schedule, exceptions, and export appear here.';
+    sub.textContent = 'The schedule, exceptions, and bookings appear here.';
     container.innerHTML = `<div class="card"><div class="table-wrap"><p class="table-empty">${escapeHtml(
       blockedExplanation()
     )}</p></div></div>`;
+    if (bookingsMount) bookingsMount.replaceChildren();
+    renderJumpBar('results');
     return;
   }
 
@@ -2913,22 +2976,54 @@ function renderResults(engine) {
 
   sub.innerHTML += editsNote;
 
-  const parts = [
-    renderUtilisationTable(eng),
-    renderClassBlockResults(eng),
-    renderExceptionsTable(eng),
-    renderAppointmentsPreview(eng),
-    // SPEC.md §7.4 — one row per coach, each with its own .ics download, plus
-    // the "Export all coaches" control above them. The §14 bookings card is
-    // not here any more: it moved to the Edit step in v1.9.
-    renderCoachCalendarsCard(eng),
-    renderCoachAssignmentsExport(eng),
-  ];
+  // Results reads the schedule; the files it produces are the Export step's
+  // job, so the appointments preview, the coach calendars and the coach
+  // assignments upload all live there now.
+  const parts = [renderUtilisationTable(eng), renderClassBlockResults(eng), renderExceptionsTable(eng)];
 
   container.innerHTML = parts.join('');
+  // SPEC.md §14 — the bookings card, back on Results and reading the edited
+  // schedule (§17.5), so it can never drift from the grid or the export.
+  guard('showing the bookings', () => renderBookingsSection(eng));
+  renderJumpBar('results');
+}
+
+/**
+ * The Export step (SPEC.md §7): the appointments preview and its export
+ * button, the per-coach calendars, the coach-assignments batch upload, and the
+ * export settings panel that shapes the columns. Every one of them reads the
+ * edited schedule (§17.5), exactly as it did on Results.
+ */
+function renderExportStep(engine) {
+  const container = document.getElementById('export-content');
+  const sub = document.getElementById('export-sub');
+  if (!container || !sub) throw new Error('The page is missing the export content elements.');
+
+  if (!hasResultsInputs() || !engine) {
+    sub.textContent = 'The files this run produces, and the column layout they use.';
+    container.innerHTML = `<div class="card"><div class="table-wrap"><p class="table-empty">${escapeHtml(
+      blockedExplanation()
+    )}</p></div></div>`;
+    renderJumpBar('export');
+    return;
+  }
+
+  const eng = engine;
+  const fileCount = state.mode === 'auto' ? 'two spreadsheets' : 'one spreadsheet';
+  sub.innerHTML = `<span class="mono-500">${eng.appointments.length}</span> appointments across ${fileCount}, plus one calendar file per coach on demand.`;
+
+  container.innerHTML = [
+    renderAppointmentsPreview(eng),
+    // SPEC.md §7.4 — one row per coach, each with its own .ics download, plus
+    // the "Export all coaches" control above them.
+    renderCoachCalendarsCard(eng),
+    renderCoachAssignmentsExport(eng),
+  ].join('');
+
   attachExportButtonHandler();
   attachCoachAssignmentsButtonHandler();
   guard('setting up the coach calendar downloads', () => attachCoachCalendarHandlers());
+  renderJumpBar('export');
 }
 
 /**
@@ -2946,6 +3041,7 @@ function refreshComputedSteps() {
   guard('working out coach capacity', () => renderReview(eng));
   guard('showing the editable schedule', () => renderEditStep(eng));
   guard('building the schedule', () => renderResults(eng));
+  guard('preparing the exports', () => renderExportStep(eng));
   guard('updating the blocked weeks and dates panel', () => renderBlockingContext(eng));
   renderStep();
 }
@@ -2982,9 +3078,9 @@ function persistExportMapping() {
   setExportMapping(state.exportMapping);
 }
 
-/** The preview table follows the mapping, so every change re-renders Results. */
-function refreshResults() {
-  guard('updating the appointments preview', () => renderResults(hasCoreUploads() ? computeEngineState() : null));
+/** The preview table follows the mapping, so every change re-renders Export. */
+function refreshExportPreview() {
+  guard('updating the appointments preview', () => renderExportStep(hasCoreUploads() ? computeEngineState() : null));
 }
 
 function moveMappingColumn(index, direction) {
@@ -2994,14 +3090,14 @@ function moveMappingColumn(index, direction) {
   state.exportMapping.splice(newIndex, 0, col);
   persistExportMapping();
   renderMappingEditor();
-  refreshResults();
+  refreshExportPreview();
 }
 
 function removeMappingColumn(index) {
   state.exportMapping.splice(index, 1);
   persistExportMapping();
   renderMappingEditor();
-  refreshResults();
+  refreshExportPreview();
 }
 
 function renderMappingEditor() {
@@ -3038,7 +3134,7 @@ function renderMappingEditor() {
       guarded('including or excluding a column', () => {
         col.included = includeCheckbox.checked;
         persistExportMapping();
-        refreshResults();
+        refreshExportPreview();
       })
     );
     includeTd.appendChild(includeCheckbox);
@@ -3053,7 +3149,7 @@ function renderMappingEditor() {
       guarded('renaming a column', () => {
         col.header = headerInput.value;
         persistExportMapping();
-        refreshResults();
+        refreshExportPreview();
       })
     );
     headerTd.appendChild(headerInput);
@@ -3069,7 +3165,7 @@ function renderMappingEditor() {
         guarded('editing a constant value', () => {
           col.value = valueInput.value;
           persistExportMapping();
-          refreshResults();
+          refreshExportPreview();
         })
       );
       valueTd.appendChild(valueInput);
@@ -3113,7 +3209,7 @@ function setupExportSettings() {
       state.exportMapping.push(createConstantColumn('New column', ''));
       persistExportMapping();
       renderMappingEditor();
-      refreshResults();
+      refreshExportPreview();
     })
   );
 
@@ -3123,7 +3219,7 @@ function setupExportSettings() {
       state.exportMapping = getDefaultMapping();
       persistExportMapping();
       renderMappingEditor();
-      refreshResults();
+      refreshExportPreview();
     })
   );
 
@@ -3162,6 +3258,7 @@ function startOver(alsoClearSettings) {
     modeAutoInput.checked = true;
     modePreAllocatedInput.checked = false;
     pairingsUploadCard.hidden = true;
+    renderJumpBar('upload');
     renderMappingEditor();
   }
 
@@ -3279,6 +3376,11 @@ function init() {
   guard('setting up the discard-edits dialogue', setupEditsDiscardDialog);
   guard('setting up the edit step', setupEditKeyboard);
   guard('setting up the export settings panel', setupExportSettings);
+
+  guard('building the jump-to bars', () => {
+    renderJumpBar('setup');
+    renderJumpBar('upload');
+  });
 
   renderStep();
   refreshComputedSteps();
