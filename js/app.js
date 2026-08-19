@@ -37,6 +37,7 @@ import {
   parseCoachAvailability,
   parseStudentList,
   parsePairings,
+  parseExistingAppointments,
   checkPairingsReferences,
   checkStudentClassBlocks,
 } from './parse.js';
@@ -46,6 +47,7 @@ import {
   classBlockKey,
   slotsForClassBlock,
   computeQuotas,
+  computeTopUpQuotas,
   schedule,
   expandToAppointments,
   applyBlocks,
@@ -58,6 +60,10 @@ import {
   CLASS_BLOCK_TOTAL_MINUTES,
   REASONS,
 } from './scheduler.js';
+import {
+  buildExistingRun,
+  splitExistingStudents,
+} from './existing.js';
 import {
   bookingCoaches,
   buildCoachBookings,
@@ -101,21 +107,27 @@ const STEPS = ['setup', 'upload', 'review', 'edit', 'results', 'export'];
 
 // Parsed upload data lives only in memory (state.uploads) for the session —
 // per SPEC.md §2 it must never be written to localStorage.
-const UPLOAD_KEYS = ['classSchedule', 'coachAvailability', 'studentList', 'pairings'];
+const UPLOAD_KEYS = ['classSchedule', 'coachAvailability', 'studentList', 'pairings', 'existingAppointments'];
 const UPLOAD_PARSERS = {
   classSchedule: parseClassSchedule,
   coachAvailability: parseCoachAvailability,
   studentList: parseStudentList,
   pairings: parsePairings,
+  existingAppointments: parseExistingAppointments,
 };
 
-/** Human names for the four uploads, used in messages. */
+/** Human names for the uploads, used in messages. */
 const UPLOAD_LABELS = {
   classSchedule: 'class schedule',
   coachAvailability: 'coach availability',
   studentList: 'student list',
   pairings: 'pairings',
+  existingAppointments: 'previous appointments export',
 };
+
+// SPEC.md §5 / §19 — the three assignment modes. Modify-existing schedules by
+// the auto-assign rules, on top of a run that has already been scheduled.
+const MODES = ['auto', 'pre-allocated', 'modify-existing'];
 
 const storedMode = getMode();
 const storedCampus = getCampus();
@@ -123,11 +135,17 @@ const storedCampus = getCampus();
 const state = {
   stepIndex: 0,
   startDate: getStartDate() || null, // ISO yyyy-mm-dd, Monday-normalised
-  mode: storedMode === 'pre-allocated' ? 'pre-allocated' : 'auto',
+  mode: MODES.includes(storedMode) ? storedMode : 'auto',
   // One campus per run (SPEC.md §6.1): its timezone is what turns naive slot
   // times into the offset-bearing instants the export requires.
   campusId: campusOrDefault(storedCampus).id,
-  uploads: { classSchedule: null, coachAvailability: null, studentList: null, pairings: null },
+  uploads: {
+    classSchedule: null,
+    coachAvailability: null,
+    studentList: null,
+    pairings: null,
+    existingAppointments: null,
+  },
   exportMapping: sanitiseMapping(getExportMapping()) || getDefaultMapping(),
   // Blocked coach weeks/dates (SPEC.md §11.2) and the coach the panel is
   // currently editing.
@@ -161,7 +179,9 @@ const campusSelect = mustFind('campus-select');
 const campusNotice = mustFind('campus-notice');
 const modeAutoInput = mustFind('mode-auto');
 const modePreAllocatedInput = mustFind('mode-pre-allocated');
+const modeModifyExistingInput = mustFind('mode-modify-existing');
 const pairingsUploadCard = mustFind('pairings-upload-card');
+const existingUploadCard = mustFind('existing-appointments-upload-card');
 const backBtn = mustFind('back-btn');
 const nextBtn = mustFind('next-btn');
 const startOverBtn = mustFind('start-over-btn');
@@ -290,15 +310,22 @@ function handleModeChange(mode) {
     () => {
       state.mode = mode;
       setMode(mode);
-      pairingsUploadCard.hidden = mode !== 'pre-allocated';
+      applyModeToUploadCards();
       renderJumpBar('upload');
       refreshComputedSteps();
     },
     () => {
       modeAutoInput.checked = state.mode === 'auto';
       modePreAllocatedInput.checked = state.mode === 'pre-allocated';
+      modeModifyExistingInput.checked = state.mode === 'modify-existing';
     }
   );
+}
+
+/** Only the uploads the current mode uses are on the Upload step (§5.2, §19.1). */
+function applyModeToUploadCards() {
+  pairingsUploadCard.hidden = state.mode !== 'pre-allocated';
+  existingUploadCard.hidden = state.mode !== 'modify-existing';
 }
 
 /**
@@ -1138,7 +1165,14 @@ const CORE_UPLOAD_KEYS = ['classSchedule', 'coachAvailability', 'studentList'];
 
 /** The uploads the current mode actually uses (SPEC.md §5.2 adds pairings). */
 function relevantUploadKeys() {
-  return state.mode === 'pre-allocated' ? [...CORE_UPLOAD_KEYS, 'pairings'] : CORE_UPLOAD_KEYS;
+  if (state.mode === 'pre-allocated') return [...CORE_UPLOAD_KEYS, 'pairings'];
+  if (state.mode === 'modify-existing') return ['existingAppointments', ...CORE_UPLOAD_KEYS];
+  return CORE_UPLOAD_KEYS;
+}
+
+/** Whether this run is adding students to an already-scheduled term (§19). */
+function isModifyExisting() {
+  return state.mode === 'modify-existing';
 }
 
 /**
@@ -1232,10 +1266,38 @@ function computeEngineState() {
   // Per-class-block usable slots and student counts (SPEC.md §6.3): a slot a
   // class blocks out for one cohort is still capacity for the others, so this
   // is what explains why a given hour is or is not on offer to a student.
+  // SPEC.md §19 — modify-existing mode reads the previous run's appointments
+  // export back as bookings that already exist: they hold their places, they
+  // count towards each coach's load, and the students in them are not
+  // scheduled again. Every flag it raises is a disagreement between those
+  // bookings and the files uploaded now (§19.3), never a silent correction.
+  const modifyExisting = isModifyExisting();
+  const existingRun = modifyExisting
+    ? buildExistingRun(rowsFor('existingAppointments'), {
+        slots,
+        classBlocks,
+        startMonday: state.startDate || null,
+        students: studentRows,
+        coaches,
+      })
+    : null;
+
+  const { newStudents, alreadyScheduled } = modifyExisting
+    ? splitExistingStudents(studentRows, existingRun)
+    : { newStudents: studentRows, alreadyScheduled: [] };
+
+  // Everyone in the run, so the class-block counts and the §5.1 quota are
+  // computed over the whole cohort rather than over the part being added now.
+  const listedIds = new Set(studentRows.map((student) => String(student.contactSfId)));
+  const allStudents = [
+    ...studentRows,
+    ...(existingRun?.students || []).filter((student) => !listedIds.has(student.contactSfId)),
+  ];
+
   const classBlockStats = classBlocks.map((block) => ({
     ...block,
     usableSlots: slotsForClassBlock(slots, block.id).length,
-    studentCount: studentRows.filter((s) => classBlockKey(s.classBlock) === block.id).length,
+    studentCount: allStudents.filter((s) => classBlockKey(s.classBlock) === block.id).length,
   }));
 
   const slotCounts = {};
@@ -1251,7 +1313,10 @@ function computeEngineState() {
     capacity[c] = (slotCounts[c] || 0) * MAX_STUDENTS_PER_SLOT;
   });
   const totalCapacity = coaches.reduce((sum, c) => sum + capacity[c], 0);
-  const studentCount = studentRows.length;
+  // The students this run has to place, and everyone the term holds once the
+  // existing bookings are counted (§19.4).
+  const studentCount = newStudents.length;
+  const totalStudentCount = allStudents.length;
 
   const fteMap = getFteMap();
   const fte = {};
@@ -1261,13 +1326,26 @@ function computeEngineState() {
   });
 
   let quotas = {};
+  // The share of the whole cohort each coach is aimed at (§5.1). In an
+  // ordinary run it is the quota itself; in a top-up it is what `quotas`
+  // above is measured against, and what a §17.6 quota warning names.
+  let overallQuotas = {};
   let assignments = [];
   let unassigned = [];
 
   if (state.mode === 'pre-allocated') {
     ({ assignments, unassigned } = schedule(studentRows, slots, 'pre-allocated', pairingRows, coaches, { classBlocks }));
+  } else if (modifyExisting) {
+    overallQuotas = computeQuotas(coaches, fte, totalStudentCount, slotCounts);
+    quotas = computeTopUpQuotas(coaches, fte, existingRun.counts, studentCount, slotCounts);
+    ({ assignments, unassigned } = schedule(newStudents, slots, 'auto', quotas, coaches, {
+      classBlocks,
+      occupied: existingRun.occupied,
+      priorCounts: existingRun.counts,
+    }));
   } else {
     quotas = computeQuotas(coaches, fte, studentCount, slotCounts);
+    overallQuotas = quotas;
     ({ assignments, unassigned } = schedule(studentRows, slots, 'auto', quotas, coaches, { classBlocks }));
   }
 
@@ -1291,11 +1369,16 @@ function computeEngineState() {
     slots,
     classBlocks,
     blocks: engineBlocks,
-    quotas,
+    // A quota warning (§17.6) has to be about the coach's whole load, so a
+    // top-up run measures against the cohort-wide share, not the top-up part.
+    quotas: modifyExisting ? overallQuotas : quotas,
     mode: state.mode,
     startMonday: state.startDate || null,
     timeZone,
-    students: studentRows,
+    students: newStudents,
+    // SPEC.md §19.5 — the previous run's placements: shown on the grid, never
+    // editable, and counted by every occupancy and balance check.
+    lockedPlacements: existingRun?.placements || [],
   };
   const edited = buildEditedSchedule(
     {
@@ -1308,12 +1391,18 @@ function computeEngineState() {
     editContext
   );
 
+  // Utilisation is a coach's real load, so an existing booking counts towards
+  // it exactly as a new one does (§19.6); `newByCoach` is the part this run
+  // added, which is what the top-up quota is read against.
   const scheduledByCoach = {};
+  const newByCoach = {};
   coaches.forEach((c) => {
-    scheduledByCoach[c] = 0;
+    scheduledByCoach[c] = existingRun?.counts?.[c] || 0;
+    newByCoach[c] = 0;
   });
   edited.assignments.forEach((a) => {
     scheduledByCoach[a.coach] = (scheduledByCoach[a.coach] || 0) + 1;
+    newByCoach[a.coach] = (newByCoach[a.coach] || 0) + 1;
   });
 
   return {
@@ -1325,10 +1414,19 @@ function computeEngineState() {
     capacity,
     totalCapacity,
     studentCount,
+    totalStudentCount,
     studentRows,
+    // The students this run schedules, and — in a top-up — the ones the
+    // uploaded schedule already covers (§19.2).
+    newStudents,
+    alreadyScheduled,
+    allStudents,
+    existingRun,
+    modifyExisting,
     pairingRows,
     fte,
     quotas,
+    overallQuotas,
     assignments: edited.assignments,
     unassigned: edited.unassigned,
     appointments: edited.appointments,
@@ -1336,6 +1434,7 @@ function computeEngineState() {
     movedCount: edited.movedCount,
     engineBlocks,
     scheduledByCoach,
+    newByCoach,
     // The §17 working set: the editable placements, the context every
     // validation runs against, and the edits that actually survived replay.
     editContext,
@@ -1343,6 +1442,70 @@ function computeEngineState() {
     appliedEdits: edited.edits,
     skippedEdits: edited.skipped,
   };
+}
+
+/**
+ * The run being added to (SPEC.md §19.3): what the uploaded schedule holds,
+ * how many of the listed students it already covers, and every way it
+ * disagrees with the coach availability and class schedule uploaded now.
+ *
+ * The flags are the point of the card. An existing booking is a meeting real
+ * people have in their calendars, so nothing here is corrected silently: the
+ * tool says what looks wrong, keeps the booking, and leaves the decision to
+ * the person who can make it.
+ */
+function renderExistingScheduleCard(eng) {
+  const run = eng.existingRun;
+  if (!run) return '';
+
+  const flagRows = run.flags
+    .map(
+      (flag) => `
+    <tr>
+      <td><span class="chip chip-warn">${escapeHtml(capitalize(flag.code))}</span></td>
+      <td>${escapeHtml(flag.message)}</td>
+    </tr>`
+    )
+    .join('');
+
+  const summary = [
+    `<span class="mono-500">${run.students.length}</span> student${run.students.length === 1 ? '' : 's'} already scheduled`,
+    `<span class="mono-500">${run.meetingCount}</span> existing meeting${run.meetingCount === 1 ? '' : 's'}`,
+    `<span class="mono-500">${eng.studentCount}</span> student${eng.studentCount === 1 ? '' : 's'} to assign`,
+  ];
+  if (eng.alreadyScheduled.length > 0) {
+    summary.push(
+      `<span class="mono-500">${eng.alreadyScheduled.length}</span> of the uploaded student list already ha${
+        eng.alreadyScheduled.length === 1 ? 's' : 've'
+      } a coach and ${eng.alreadyScheduled.length === 1 ? 'is' : 'are'} left alone`
+    );
+  }
+
+  const body =
+    run.flags.length === 0
+      ? `<div class="table-wrap"><p class="table-empty">Nothing in the uploaded schedule clashes with the coach availability or class schedule.</p></div>`
+      : `
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Flag</th><th>What was found</th></tr></thead>
+          <tbody>${flagRows}</tbody>
+        </table>
+      </div>`;
+
+  const flagNote =
+    run.flags.length === 0
+      ? ''
+      : `<p class="help-text">${run.flags.length} thing${
+          run.flags.length === 1 ? '' : 's'
+        } to check. Existing bookings are kept exactly as uploaded — they hold their places and nothing new is scheduled over them — so these are for you to act on, not corrections the tool has made.</p>`;
+
+  return `
+    <div class="card">
+      <h2>Existing schedule</h2>
+      <p class="help-text">${summary.join(' · ')}.</p>
+      ${flagNote}
+      ${body}
+    </div>`;
 }
 
 /**
@@ -1421,6 +1584,10 @@ function renderFteAndCapacityTable(eng) {
     </div>`;
   }
 
+  // In a top-up run (§19.4) the quota column is the share still to be filled,
+  // so the students the coach already holds are shown beside it — a quota of 0
+  // next to 12 existing students is an answer, not a puzzle.
+  const topUp = eng.modifyExisting;
   const rows = eng.coaches
     .map(
       (c) => `
@@ -1428,6 +1595,7 @@ function renderFteAndCapacityTable(eng) {
       <td>${escapeHtml(c)}</td>
       <td class="mono num">${eng.slotCounts[c] || 0}</td>
       <td class="mono num">${eng.capacity[c] || 0}</td>
+      ${topUp ? `<td class="mono num">${eng.existingRun.counts[c] || 0}</td>` : ''}
       <td><input type="number" class="fte" data-coach="${escapeHtml(c)}" min="0.05" max="1.00" step="0.05" value="${eng.fte[c].toFixed(2)}" aria-label="FTE for ${escapeHtml(c)}" /></td>
       <td class="mono-500 num">${eng.quotas[c] || 0}</td>
     </tr>`
@@ -1437,10 +1605,16 @@ function renderFteAndCapacityTable(eng) {
   return `
     <div class="card">
       <h2>Coach capacity</h2>
-      <p class="help-text">FTE changes recalculate quotas immediately.</p>
+      <p class="help-text">FTE changes recalculate quotas immediately.${
+        topUp
+          ? ' The quota is the number of new students each coach takes: their FTE share of the whole term, less the students they already have.'
+          : ''
+      }</p>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Coach</th><th class="num">Valid slots</th><th class="num">Capacity</th><th>FTE</th><th class="num">Quota</th></tr></thead>
+          <thead><tr><th>Coach</th><th class="num">Valid slots</th><th class="num">Capacity</th>${
+            topUp ? '<th class="num">Already has</th>' : ''
+          }<th>FTE</th><th class="num">${topUp ? 'New quota' : 'Quota'}</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>
@@ -1654,12 +1828,24 @@ function renderReview(engine) {
 
   const eng = engine;
 
-  if (eng.totalCapacity < eng.studentCount) {
-    const shortBy = eng.studentCount - eng.totalCapacity;
+  // In a top-up run the capacity that matters is what the existing bookings
+  // have left (§19.4), and the student count is the students being added now.
+  const heldCapacity = eng.modifyExisting ? eng.existingRun.students.length : 0;
+  const freeCapacity = eng.totalCapacity - heldCapacity;
+  if (freeCapacity < eng.studentCount) {
+    const shortBy = eng.studentCount - freeCapacity;
     parts.push(
-      `<div class="banner">Total capacity (${eng.totalCapacity}) is below the number of students (${eng.studentCount}). ${shortBy} student${shortBy === 1 ? '' : 's'} will be unassigned unless availability or FTE increases.</div>`
+      `<div class="banner">${
+        eng.modifyExisting
+          ? `Capacity left after the existing bookings (${freeCapacity} of ${eng.totalCapacity})`
+          : `Total capacity (${eng.totalCapacity})`
+      } is below the number of students to assign (${eng.studentCount}). ${shortBy} student${
+        shortBy === 1 ? '' : 's'
+      } will be unassigned unless availability or FTE increases.</div>`
     );
   }
+
+  if (eng.modifyExisting) parts.push(renderExistingScheduleCard(eng));
 
   parts.push(renderClassBlocksCard(eng));
 
@@ -1682,7 +1868,7 @@ function renderReview(engine) {
   container.innerHTML = parts.join('');
   renderJumpBar('review');
 
-  if (state.mode === 'auto') attachFteInputHandlers();
+  if (state.mode !== 'pre-allocated') attachFteInputHandlers();
 }
 
 function renderUtilisationTable(eng) {
@@ -1694,6 +1880,9 @@ function renderUtilisationTable(eng) {
     </div>`;
   }
 
+  // A coach's load is everything they hold, so a top-up run counts the
+  // existing bookings in "Scheduled" and shows what this run added beside it.
+  const topUp = eng.modifyExisting;
   const rows = eng.coaches
     .map((c) => {
       const capacity = eng.capacity[c] || 0;
@@ -1704,6 +1893,7 @@ function renderUtilisationTable(eng) {
       <td>${escapeHtml(c)}</td>
       <td class="mono num">${capacity}</td>
       <td class="mono num">${scheduled}</td>
+      ${topUp ? `<td class="mono num">${eng.newByCoach[c] || 0}</td>` : ''}
       <td class="mono-500 num">${pct}%</td>
     </tr>`;
     })
@@ -1712,9 +1902,16 @@ function renderUtilisationTable(eng) {
   return `
     <div class="card">
       <h2>Coach utilisation</h2>
+      ${
+        topUp
+          ? '<p class="help-text">Scheduled counts every student the coach holds, including the ones from the schedule you uploaded. Added is what this run gave them.</p>'
+          : ''
+      }
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Coach</th><th class="num">Capacity</th><th class="num">Scheduled</th><th class="num">Utilisation</th></tr></thead>
+          <thead><tr><th>Coach</th><th class="num">Capacity</th><th class="num">Scheduled</th>${
+            topUp ? '<th class="num">Added</th>' : ''
+          }<th class="num">Utilisation</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       </div>
@@ -1853,10 +2050,12 @@ function renderAppointmentsPreview(eng) {
   }
 
   const { columns, rows } = buildPreviewRows(eng.appointments, state.exportMapping, 50);
+  const only = eng.modifyExisting ? ' Only the students this run added are in the file.' : '';
   const note =
-    eng.appointments.length > 50
+    (eng.appointments.length > 50
       ? `Showing the first 50 of ${eng.appointments.length} appointments, per the export mapping below.`
-      : `${eng.appointments.length} appointment${eng.appointments.length === 1 ? '' : 's'}, per the export mapping below.`;
+      : `${eng.appointments.length} appointment${eng.appointments.length === 1 ? '' : 's'}, per the export mapping below.`) +
+    only;
 
   const theadHtml = columns.length
     ? columns.map((col) => `<th>${escapeHtml(col.header || '(untitled)')}</th>`).join('')
@@ -1895,7 +2094,7 @@ function renderAppointmentsPreview(eng) {
  * nothing they did not upload, and the spec scopes the file to auto-assign.
  */
 function renderCoachAssignmentsExport(eng) {
-  if (state.mode !== 'auto') return '';
+  if (state.mode === 'pre-allocated') return '';
 
   const rows = buildCoachAssignmentRows(eng.assignments);
   const missingSfId = findCoachesWithoutSfId(eng.assignments);
@@ -1917,7 +2116,9 @@ function renderCoachAssignmentsExport(eng) {
   const note =
     rows.length === 0
       ? 'No student has been assigned a coach, so there is nothing to upload yet.'
-      : `${count}, one row each — the coach they were assigned, not their four meetings. Separate file from the appointments export above.`;
+      : `${count}, one row each — the coach they were assigned, not their four meetings. Separate file from the appointments export above.${
+          eng.modifyExisting ? ' Only the students this run added are in it.' : ''
+        }`;
 
   return `
     <div class="card">
@@ -1970,7 +2171,7 @@ function attachCoachAssignmentsButtonHandler() {
     }
     const eng = guard('rebuilding the schedule for export', computeEngineState);
     if (!eng) return;
-    if (state.mode !== 'auto') {
+    if (state.mode === 'pre-allocated') {
       showError(
         'The coach assignments export is only available in auto-assign mode.',
         'In pre-allocated mode the student–coach pairings come from your own pairings file.',
@@ -2384,6 +2585,19 @@ function renderEditCell(cell, coach, selection) {
           weekList
         )}</span></li>`;
       }
+      // SPEC.md §19.5 — an existing booking holds its position and is shown
+      // there, but it is not a control: it belongs to a run that has already
+      // been exported, so it can be neither picked up nor swapped into.
+      if (position.locked) {
+        return `<li class="edit-position edit-position-locked" title="${escapeHtml(
+          `${position.student.studentName} — existing booking at ${at}`
+        )}">
+          <span class="edit-position-name">${escapeHtml(position.student.studentName)}</span>
+          <span class="edit-position-meta mono">Offset ${position.offset} · wks ${escapeHtml(
+            weekList
+          )} · existing</span>
+        </li>`;
+      }
       const isSelected = selection && selection.contactSfId === position.student.contactSfId;
       const label = !selection
         ? `Pick up ${position.student.studentName} at ${at}, ${weeks}`
@@ -2473,8 +2687,12 @@ function renderEditGridCard(eng, selection) {
     )
     .join('');
 
-  const placed = eng.placements.filter((placement) => placement.coach === coach).length;
-  const quota = state.mode === 'auto' ? ` · quota ${eng.quotas[coach] || 0}` : '';
+  const held = eng.modifyExisting ? eng.existingRun.counts[coach] || 0 : 0;
+  const placed = eng.placements.filter((placement) => placement.coach === coach).length + held;
+  const quota =
+    state.mode === 'pre-allocated'
+      ? ''
+      : ` · quota ${(eng.modifyExisting ? eng.overallQuotas[coach] : eng.quotas[coach]) || 0}`;
 
   return `
     <div class="card edit-grid-card">
@@ -2949,7 +3167,11 @@ function renderBookingsSection(eng) {
   card.className = 'card';
   card.innerHTML = `
     <h2 id="bookings-heading">Bookings</h2>
-    <p class="help-text">Look up the schedule from either side: a coach's students, or a student's week. It shows the schedule as it stands, including every edit made on the Edit step.</p>
+    <p class="help-text">Look up the schedule from either side: a coach's students, or a student's week. It shows the schedule as it stands, including every edit made on the Edit step.${
+      eng.modifyExisting
+        ? ' In this mode it covers the students this run added; the meetings in the schedule you uploaded are not repeated here.'
+        : ''
+    }</p>
     <div class="toggle-group bookings-toggle" role="radiogroup" aria-labelledby="bookings-heading">
       <label class="toggle-option">
         <input type="radio" name="bookings-view" value="coach"${isStudentView ? '' : ' checked'} />
@@ -3077,7 +3299,11 @@ function renderResults(engine) {
       ? ` · <span class="mono-500">${eng.movedCount}</span> meeting${eng.movedCount === 1 ? '' : 's'} moved around blocked weeks`
       : '';
 
-  sub.innerHTML = `<span class="mono-500">${scheduledCount}</span> of <span class="mono-500">${eng.studentCount}</span> students scheduled · <span class="mono-500">${eng.appointments.length}</span> appointments${movedNote}${unassignedChip}${exceptionChip}`;
+  // In a top-up run every count on this line is about the students being
+  // added (§19.6); the term's own totals are in the Existing schedule card.
+  const scope = eng.modifyExisting ? 'new students' : 'students';
+  const appointmentScope = eng.modifyExisting ? 'new appointments' : 'appointments';
+  sub.innerHTML = `<span class="mono-500">${scheduledCount}</span> of <span class="mono-500">${eng.studentCount}</span> ${scope} scheduled · <span class="mono-500">${eng.appointments.length}</span> ${appointmentScope}${movedNote}${unassignedChip}${exceptionChip}`;
 
   const editsNote =
     state.edits.length > 0
@@ -3091,7 +3317,12 @@ function renderResults(engine) {
   // Results reads the schedule; the files it produces are the Export step's
   // job, so the appointments preview, the coach calendars and the coach
   // assignments upload all live there now.
-  const parts = [renderUtilisationTable(eng), renderClassBlockResults(eng), renderExceptionsTable(eng)];
+  const parts = [
+    ...(eng.modifyExisting ? [renderExistingScheduleCard(eng)] : []),
+    renderUtilisationTable(eng),
+    renderClassBlockResults(eng),
+    renderExceptionsTable(eng),
+  ];
 
   container.innerHTML = parts.join('');
   // SPEC.md §14 — the bookings card, back on Results and reading the edited
@@ -3121,8 +3352,15 @@ function renderExportStep(engine) {
   }
 
   const eng = engine;
-  const fileCount = state.mode === 'auto' ? 'two spreadsheets' : 'one spreadsheet';
-  sub.innerHTML = `<span class="mono-500">${eng.appointments.length}</span> appointments across ${fileCount}, plus one calendar file per coach on demand.`;
+  const fileCount = state.mode === 'pre-allocated' ? 'one spreadsheet' : 'two spreadsheets';
+  // SPEC.md §19.6 — a top-up run exports the students it added and nobody
+  // else: the previous run's files were produced, and sent out, already.
+  const scope = eng.modifyExisting
+    ? ' Every file here covers only the students this run added — the schedule you uploaded is not re-exported.'
+    : '';
+  sub.innerHTML = `<span class="mono-500">${eng.appointments.length}</span> appointments across ${fileCount}, plus one calendar file per coach on demand.${escapeHtml(
+    scope
+  )}`;
 
   container.innerHTML = [
     renderAppointmentsPreview(eng),
@@ -3369,7 +3607,8 @@ function startOver(alsoClearSettings) {
     dateNotice.hidden = true;
     modeAutoInput.checked = true;
     modePreAllocatedInput.checked = false;
-    pairingsUploadCard.hidden = true;
+    modeModifyExistingInput.checked = false;
+    applyModeToUploadCards();
     renderJumpBar('upload');
     renderMappingEditor();
   }
@@ -3432,12 +3671,10 @@ function init() {
   if (state.startDate) {
     startDateInput.value = state.startDate;
   }
-  if (state.mode === 'pre-allocated') {
-    modePreAllocatedInput.checked = true;
-  } else {
-    modeAutoInput.checked = true;
-  }
-  pairingsUploadCard.hidden = state.mode !== 'pre-allocated';
+  modeAutoInput.checked = state.mode === 'auto';
+  modePreAllocatedInput.checked = state.mode === 'pre-allocated';
+  modeModifyExistingInput.checked = state.mode === 'modify-existing';
+  applyModeToUploadCards();
 
   campusSelect.innerHTML = CAMPUSES.map(
     (campus) => `<option value="${campus.id}">${escapeHtml(campus.label)}</option>`
@@ -3457,6 +3694,10 @@ function init() {
   modePreAllocatedInput.addEventListener(
     'change',
     guardedAsync('switching to pre-allocated mode', () => handleModeChange('pre-allocated'))
+  );
+  modeModifyExistingInput.addEventListener(
+    'change',
+    guardedAsync('switching to modify-existing mode', () => handleModeChange('modify-existing'))
   );
 
   backBtn.addEventListener('click', guarded('going back a step', () => stepBy(-1)));

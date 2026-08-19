@@ -41,7 +41,10 @@ import {
   slotAllowsClassBlock,
   slotsForClassBlock,
   computeQuotas,
+  computeTopUpQuotas,
   balancedDayTargets,
+  offsetForWeek,
+  placeKey,
   schedule,
   expandToAppointments,
   applyBlocks,
@@ -60,7 +63,13 @@ import {
   REASONS,
 } from './js/scheduler.js';
 import { formatIsoWithOffset, wallClockToInstant, campusOrDefault, CAMPUSES } from './js/timezone.js';
-import { parseClassScheduleSheet, parseStudentListSheet, checkStudentClassBlocks } from './js/parse.js';
+import {
+  parseClassScheduleSheet,
+  parseStudentListSheet,
+  parseExistingAppointmentsSheet,
+  checkStudentClassBlocks,
+} from './js/parse.js';
+import { buildExistingRun, splitExistingStudents, EXISTING_FLAGS } from './js/existing.js';
 import {
   getDefaultMapping,
   createConstantColumn,
@@ -3134,6 +3143,395 @@ test('describeEdit says who moved, from where, to where (§17.7)', () => {
   assert(line.includes('Ann Adams'), line);
   assert(line.includes('Coach A') && line.includes('Coach B'), line);
   assert(line.includes('offset'), line);
+});
+
+// ---- §19/§20 — modify an existing run ----
+//
+// The fixture is a whole round trip: a first run is scheduled and expanded to
+// appointment rows, those rows are written out in the §7.1 export's shape,
+// parsed back by the real parser, and used as the existing schedule a second
+// run is added on top of. Nothing here fakes the file the user re-uploads.
+
+group('§19 — the previous run, read back');
+
+const MX_AVAILABILITY = [
+  avail('Coach A', 'Monday', '09:00', '12:00', 'C-A', 'a@example.com'),
+  avail('Coach A', 'Wednesday', '09:00', '11:00', 'C-A', 'a@example.com'),
+  avail('Coach B', 'Tuesday', '09:00', '12:00', 'C-B', 'b@example.com'),
+];
+const MX_CLASSES = [{ classBlock: 'Block A', day: 'Monday', start: t('10:00'), end: t('11:00'), className: 'Maths' }];
+const MX_BLOCKS = buildClassBlocks(MX_CLASSES);
+const MX_SLOTS = buildSlots(MX_AVAILABILITY, MX_BLOCKS);
+const MX_COACHES = ['Coach A', 'Coach B'];
+const MX_FTE = { 'Coach A': 1, 'Coach B': 1 };
+const MX_SLOT_COUNTS = slotCountsOf(MX_SLOTS);
+
+const mxStudents = (prefix, count) =>
+  Array.from({ length: count }, (_, i) => ({
+    contactSfId: `${prefix}${i + 1}`,
+    studentName: `${prefix} student ${i + 1}`,
+    studentEmail: `${prefix.toLowerCase()}${i + 1}@example.com`,
+    classBlock: 'Block A',
+  }));
+
+const MX_OLD = mxStudents('OLD', 6);
+const MX_NEW = mxStudents('NEW', 5);
+
+const MX_FIRST = schedule(
+  MX_OLD,
+  MX_SLOTS,
+  'auto',
+  computeQuotas(MX_COACHES, MX_FTE, MX_OLD.length, MX_SLOT_COUNTS),
+  MX_COACHES,
+  { classBlocks: MX_BLOCKS }
+);
+const MX_FIRST_ROWS = expandToAppointments(MX_FIRST.assignments, START_MONDAY, LONDON);
+
+/** The first run's appointment rows in the §7.1 export's own shape. */
+const MX_EXPORT_HEADERS = [
+  'Student Name',
+  'Contact SF ID (Student)',
+  'Student Email',
+  'Service Name',
+  'Coach Name',
+  'Coach SF ID',
+  'Coach Email',
+  'Meeting Start Date & Time',
+  'Meeting End Date & Time',
+  'Meeting Status',
+];
+const mxSheetOf = (rows) => [
+  MX_EXPORT_HEADERS,
+  ...rows.map((row) => [
+    row.studentName,
+    row.contactSfId,
+    row.studentEmail,
+    row.serviceName,
+    row.coachName,
+    row.coachSfId,
+    row.coachEmail,
+    row.startDateTime,
+    row.endDateTime,
+    row.meetingStatus,
+  ]),
+];
+
+const MX_PARSED = parseExistingAppointmentsSheet('appointments_2026-09-01_0900.xlsx', mxSheetOf(MX_FIRST_ROWS));
+
+const mxRun = (parsed = MX_PARSED, options = {}) =>
+  buildExistingRun(parsed.rows, {
+    slots: MX_SLOTS,
+    classBlocks: MX_BLOCKS,
+    startMonday: START_MONDAY,
+    students: [...MX_OLD, ...MX_NEW],
+    coaches: MX_COACHES,
+    ...options,
+  });
+
+const mxTopUp = (run, newStudents = MX_NEW) =>
+  schedule(newStudents, MX_SLOTS, 'auto', computeTopUpQuotas(MX_COACHES, MX_FTE, run.counts, newStudents.length, MX_SLOT_COUNTS), MX_COACHES, {
+    classBlocks: MX_BLOCKS,
+    occupied: run.occupied,
+    priorCounts: run.counts,
+  });
+
+test('the exported appointments file parses back with no errors', () => {
+  assertEqual(MX_PARSED.errors.length, 0, `errors: ${MX_PARSED.errors.map((e) => e.message).join('; ')}`);
+  assertEqual(MX_PARSED.rows.length, MX_FIRST_ROWS.length, 'every appointment row is read back');
+  assertEqual(MX_PARSED.warnings.length, 0, 'a clean export raises no warnings');
+});
+
+test('four rows per student become one student holding one placement', () => {
+  const run = mxRun();
+  assertEqual(run.students.length, MX_OLD.length, 'one entry per student, not per meeting');
+  assertEqual(run.meetingCount, MX_FIRST_ROWS.length, 'and every meeting is still counted');
+  run.students.forEach((student) => {
+    const source = MX_FIRST.assignments.find((a) => a.student.contactSfId === student.contactSfId);
+    assertEqual(student.placement.coach, source.coach, `${student.contactSfId} keeps their coach`);
+    assertEqual(student.placement.day, source.slot.day, `${student.contactSfId} keeps their weekday`);
+    assertEqual(student.placement.start, source.slot.start, `${student.contactSfId} keeps their start time`);
+    assertEqual(student.placement.offset, source.offset, `${student.contactSfId}'s offset is recovered from the dates`);
+  });
+  assertEqual(run.flags.length, 0, `a schedule that matches its own inputs raises no flag: ${run.flags.map((f) => f.message).join('; ')}`);
+});
+
+test('offsetForWeek is the inverse of weeksForOffset, and weeks 4, 8 and 12 have none', () => {
+  [1, 2, 3].forEach((offset) => {
+    weeksForOffset(offset).forEach((week) => assertEqual(offsetForWeek(week), offset, `week ${week}`));
+  });
+  [4, 8, 12].forEach((week) => assertEqual(offsetForWeek(week), null, `week ${week} holds no meeting`));
+  assertEqual(offsetForWeek(16), null, 'and a week outside the term has no offset at all');
+});
+
+group('§19.2 — only the students that still need a coach');
+
+test('a student the uploaded schedule already covers is not scheduled again', () => {
+  const run = mxRun();
+  const { newStudents, alreadyScheduled } = splitExistingStudents([...MX_OLD, ...MX_NEW], run);
+  assertDeep(newStudents.map((s) => s.contactSfId), MX_NEW.map((s) => s.contactSfId), 'only the new arrivals are assigned');
+  assertEqual(alreadyScheduled.length, MX_OLD.length, 'and the rest are recognised by their Contact SF ID');
+});
+
+test('a student list holding only the new students works the same way', () => {
+  const run = mxRun();
+  const { newStudents, alreadyScheduled } = splitExistingStudents(MX_NEW, run);
+  assertEqual(newStudents.length, MX_NEW.length, 'every listed student is new');
+  assertEqual(alreadyScheduled.length, 0, 'and none of them was already scheduled');
+});
+
+group('§19.4 — existing bookings hold their places and count as load');
+
+test('no new student is given a place an existing booking holds', () => {
+  const run = mxRun();
+  const second = mxTopUp(run);
+  assertEqual(second.assignments.length, MX_NEW.length, 'every new student is placed');
+  second.assignments.forEach((a) => {
+    assert(
+      !run.occupied.has(placeKey(a.coach, a.slot.day, a.slot.start, a.offset)),
+      `${a.student.contactSfId} was given a place an existing booking already holds`
+    );
+  });
+});
+
+test('the top-up quota is the coach’s FTE share of the whole term, less what they already hold', () => {
+  const run = mxRun();
+  const quotas = computeTopUpQuotas(MX_COACHES, MX_FTE, run.counts, MX_NEW.length, MX_SLOT_COUNTS);
+  const overall = computeQuotas(MX_COACHES, MX_FTE, MX_OLD.length + MX_NEW.length, MX_SLOT_COUNTS);
+  MX_COACHES.forEach((coach) => {
+    assertEqual(quotas[coach], overall[coach] - run.counts[coach], `${coach}'s top-up`);
+  });
+  assertEqual(
+    MX_COACHES.reduce((sum, coach) => sum + quotas[coach], 0),
+    MX_NEW.length,
+    'and between them the coaches take every new student'
+  );
+});
+
+test('a coach already above their share takes no new student, and the others absorb them', () => {
+  // Coach A holds every one of the six existing students; an equal-FTE split
+  // of eleven students would have given them six, so their top-up is nil.
+  const counts = { 'Coach A': 6, 'Coach B': 0 };
+  const quotas = computeTopUpQuotas(MX_COACHES, MX_FTE, counts, 5, MX_SLOT_COUNTS);
+  assertEqual(quotas['Coach A'], 0, 'the coach at their share takes none');
+  assertEqual(quotas['Coach B'], 5, 'and the students go to the coach with room');
+});
+
+test('the day balance counts the meetings a coach already has', () => {
+  // Coach A holds three students on Monday and none on Wednesday, so the two
+  // new students they take go to Wednesday, the day their week is thinnest.
+  const held = [
+    { studentName: 'Held 1', contactSfId: 'H1', studentEmail: 'h1@example.com', classBlock: 'Block A', coachName: 'Coach A', day: 'Monday', start: t('09:00'), end: t('10:00'), date: '2026-09-07', coachSfId: 'C-A', coachEmail: 'a@example.com', _row: 2 },
+    { studentName: 'Held 2', contactSfId: 'H2', studentEmail: 'h2@example.com', classBlock: 'Block A', coachName: 'Coach A', day: 'Monday', start: t('09:00'), end: t('10:00'), date: '2026-09-14', coachSfId: 'C-A', coachEmail: 'a@example.com', _row: 3 },
+    { studentName: 'Held 3', contactSfId: 'H3', studentEmail: 'h3@example.com', classBlock: 'Block A', coachName: 'Coach A', day: 'Monday', start: t('09:00'), end: t('10:00'), date: '2026-09-21', coachSfId: 'C-A', coachEmail: 'a@example.com', _row: 4 },
+  ];
+  const run = buildExistingRun(held, { slots: MX_SLOTS, classBlocks: MX_BLOCKS, startMonday: START_MONDAY, coaches: MX_COACHES });
+  assertEqual(run.counts['Coach A'], 3, 'three students already with Coach A, all on Monday');
+  const newTwo = mxStudents('N', 2);
+  const result = schedule(newTwo, MX_SLOTS, 'auto', { 'Coach A': 2 }, MX_COACHES, {
+    classBlocks: MX_BLOCKS,
+    occupied: run.occupied,
+    priorCounts: run.counts,
+  });
+  assertDeep(
+    result.assignments.map((a) => a.slot.day),
+    ['Wednesday', 'Wednesday'],
+    'the top-up lands on the day the coach has least on'
+  );
+});
+
+group('§19.3 — what the existing schedule disagrees with');
+
+test('a booking outside the uploaded availability is flagged and still holds its place', () => {
+  const rows = MX_PARSED.rows.map((row) =>
+    row.contactSfId === 'OLD1' ? { ...row, start: t('14:00'), end: t('15:00') } : row
+  );
+  const run = mxRun({ rows });
+  const found = run.flags.filter((f) => f.code === EXISTING_FLAGS.OUTSIDE_AVAILABILITY);
+  assert(found.length > 0, 'the booking is flagged');
+  assert(found[0].message.includes('14:00'), `the message names the time: ${found[0].message}`);
+  assert(
+    [...run.occupied].some((key) => key.endsWith(`|${t('14:00')}|${run.students[0].placement.offset}`)),
+    'and the hour it uses is still held, so nothing new is booked into it'
+  );
+});
+
+test('a booking that runs during a class in the student’s own block is flagged', () => {
+  const rows = MX_PARSED.rows.map((row) =>
+    row.contactSfId === 'OLD1' ? { ...row, day: 'Monday', start: t('10:00'), end: t('11:00') } : row
+  );
+  const run = mxRun({ rows });
+  const found = run.flags.find((f) => f.code === EXISTING_FLAGS.CLASS_CLASH);
+  assert(Boolean(found), 'the clash is flagged');
+  assert(found.message.includes('Maths') && found.message.includes('Block A'), `the message names the class and block: ${found.message}`);
+});
+
+test('a coach who is no longer in the availability file is named', () => {
+  const rows = MX_PARSED.rows.map((row) => ({ ...row, coachName: 'Coach Gone' }));
+  const run = mxRun({ rows });
+  const found = run.flags.find((f) => f.code === EXISTING_FLAGS.COACH_NOT_FOUND);
+  assert(Boolean(found), 'the missing coach is flagged');
+  assert(found.message.includes('Coach Gone'), `and named: ${found.message}`);
+});
+
+test('a meeting outside the 15 term weeks is flagged rather than counted into one', () => {
+  const rows = MX_PARSED.rows.map((row) => (row.contactSfId === 'OLD1' ? { ...row, date: '2027-03-01' } : row));
+  const run = mxRun({ rows });
+  const found = run.flags.find((f) => f.code === EXISTING_FLAGS.OUTSIDE_TERM);
+  assert(Boolean(found), 'the stray date is flagged');
+  assert(found.message.includes('2027-03-01'), `and quoted: ${found.message}`);
+});
+
+test('two students on one place in the uploaded file is reported as a double booking', () => {
+  const first = MX_PARSED.rows.find((row) => row.contactSfId === 'OLD1');
+  const rows = MX_PARSED.rows.map((row) =>
+    row.contactSfId === 'OLD2' ? { ...row, coachName: first.coachName, day: first.day, start: first.start, end: first.end, date: first.date } : row
+  );
+  const run = mxRun({ rows });
+  assert(
+    run.flags.some((f) => f.code === EXISTING_FLAGS.DOUBLE_BOOKED || f.code === EXISTING_FLAGS.SPLIT_PLACEMENT),
+    'the conflict in the uploaded file is reported'
+  );
+});
+
+group('§19.5 — existing bookings on the Edit grid');
+
+test('an existing booking occupies its position, and cannot be taken or swapped', () => {
+  const run = mxRun();
+  const context = {
+    slots: MX_SLOTS,
+    classBlocks: MX_BLOCKS,
+    blocks: [],
+    quotas: { 'Coach A': 10, 'Coach B': 10 },
+    mode: 'modify-existing',
+    startMonday: START_MONDAY,
+    timeZone: LONDON,
+    students: MX_NEW,
+    lockedPlacements: run.placements,
+  };
+  const held = run.students[0].placement;
+  const student = MX_NEW[0];
+
+  const onto = validateMove(context, [], {
+    contactSfId: student.contactSfId,
+    student,
+    coach: held.coach,
+    day: held.day,
+    start: held.start,
+    offset: held.offset,
+  });
+  assertEqual(onto.ok, false, 'the position is not free');
+  assertEqual(onto.refusal.code, EDIT_REFUSALS.EXISTING_BOOKING, 'and the refusal says why');
+
+  const beside = validateMove(context, [], {
+    contactSfId: student.contactSfId,
+    student,
+    coach: held.coach,
+    day: held.day,
+    start: held.start,
+  });
+  assertEqual(beside.ok, true, 'a free offset in the same cell is still open');
+  assert(beside.offset !== held.offset, 'and it is not the one the existing booking holds');
+
+  const placements = [{ student, coach: held.coach, slot: slotAtOf(held), offset: beside.offset }];
+  const swap = validateSwap(context, placements, {
+    contactSfId: student.contactSfId,
+    withContactSfId: run.students[0].contactSfId,
+  });
+  assertEqual(swap.ok, false, 'an existing booking cannot be swapped with');
+  assertEqual(swap.refusal.code, EDIT_REFUSALS.EXISTING_BOOKING, 'and says so rather than calling them unplaced');
+
+  const grid = buildCoachGrid(context, [], held.coach);
+  const cell = grid.rows
+    .flatMap((row) => row.cells)
+    .find((entry) => entry.slot && entry.day === held.day && entry.start === held.start);
+  const position = cell.positions.find((entry) => entry.offset === held.offset);
+  assertEqual(position.locked, true, 'the grid marks the position as an existing booking');
+  assertEqual(position.free, false, 'and never as free');
+});
+
+function slotAtOf(placement) {
+  return MX_SLOTS.find(
+    (slot) => slot.coach === placement.coach && slot.day === placement.day && slot.start === placement.start
+  );
+}
+
+group('§19.6 — the invariants, and what gets exported');
+
+test('every §9 invariant holds over the existing and new schedules together', () => {
+  const run = mxRun();
+  const second = mxTopUp(run);
+  const newRows = expandToAppointments(second.assignments, START_MONDAY, LONDON);
+  const all = [...MX_FIRST_ROWS, ...newRows];
+
+  const byStudent = new Map();
+  all.forEach((row) => byStudent.set(row.contactSfId, (byStudent.get(row.contactSfId) || 0) + 1));
+  byStudent.forEach((count, id) => assertEqual(count, 4, `${id} has four meetings`));
+
+  all.forEach((row) => assert(![4, 8, 12].includes(row.weekNumber), `nothing in week ${row.weekNumber}`));
+
+  const seen = new Set();
+  all.forEach((row) => {
+    const key = `${row.coachName}|${row.date}|${row.startTime}`;
+    assert(!seen.has(key), `${row.coachName} is double-booked on ${row.date} at ${row.startTime}`);
+    seen.add(key);
+  });
+
+  all.forEach((row) => {
+    const clash = MX_CLASSES.some(
+      (cls) =>
+        cls.day === row.day &&
+        classBlockKey(cls.classBlock) === classBlockKey(row.classBlock) &&
+        cls.start < t(row.endTime) &&
+        t(row.startTime) < cls.end
+    );
+    assert(!clash, `${row.studentName} was scheduled during their own class on ${row.day}`);
+  });
+});
+
+test('the appointments export covers the new students and nobody else', () => {
+  const run = mxRun();
+  const second = mxTopUp(run);
+  const rows = expandToAppointments(second.assignments, START_MONDAY, LONDON);
+  const ids = [...new Set(rows.map((row) => row.contactSfId))].sort();
+  assertDeep(ids, MX_NEW.map((s) => s.contactSfId).sort(), 'only the students this run added are in the file');
+  assertEqual(rows.length, MX_NEW.length * 4, 'four rows each, per §7.1');
+});
+
+test('the coach-assignments upload is offered in this mode, and covers the new students only', () => {
+  const run = mxRun();
+  const second = mxTopUp(run);
+  const rows = buildCoachAssignmentRows(second.assignments);
+  assertEqual(rows.length, MX_NEW.length, 'one row per new student');
+  assertDeep(
+    rows.map((row) => row.contactSfId).sort(),
+    MX_NEW.map((s) => s.contactSfId).sort(),
+    'and no student from the schedule that was uploaded'
+  );
+  const aoa = buildCoachAssignmentAoa(second.assignments);
+  assertDeep(aoa[0], [...COACH_ASSIGNMENT_HEADERS], 'the eight §7.3 headers are unchanged');
+});
+
+testWithXLSX('the workbook builder takes modify-existing, and still refuses pre-allocated', () => {
+  const run = mxRun();
+  const second = mxTopUp(run);
+  assert(Boolean(buildCoachAssignmentsWorkbook(second.assignments, 'modify-existing')), 'the top-up run may export it');
+  let refused = false;
+  try {
+    buildCoachAssignmentsWorkbook(second.assignments, 'pre-allocated');
+  } catch (e) {
+    refused = true;
+  }
+  assertEqual(refused, true, 'the §7.3 rule is unchanged for pre-allocated runs');
+});
+
+test('the same files produce the same top-up, twice', () => {
+  const once = mxTopUp(mxRun());
+  const twice = mxTopUp(mxRun());
+  assertDeep(
+    once.assignments.map((a) => `${a.student.contactSfId}|${a.coach}|${a.slot.day}|${a.slot.start}|${a.offset}`),
+    twice.assignments.map((a) => `${a.student.contactSfId}|${a.coach}|${a.slot.day}|${a.slot.start}|${a.offset}`),
+    'identical inputs, identical output'
+  );
 });
 
 group('HTML escaping');

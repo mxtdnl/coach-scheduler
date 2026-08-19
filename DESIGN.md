@@ -65,7 +65,7 @@ Full-width, `--surface`. Header row: 13px uppercase `--ink-2`, bottom border `--
 - **Primary button:** `--action` fill, white text, 14/w500, 10px×16px padding. One per screen maximum ("Continue", "Export appointments").
 - **Secondary:** `--surface`, 1px `--line`, `--ink` text. **Destructive:** secondary style with `--err` text ("Clear all uploads", "Remove").
 - Inputs 36px tall, 1px `--line`, focus border `--action`; FTE inputs are mono, width 72px, step 0.05.
-- Mode toggle: two-segment control, active segment `--b1` fill + `--action` text; never a switch (the two modes are peers, not on/off).
+- Mode toggle: a segmented control, active segment `--b1` fill + `--action` text; never a switch (the modes are peers, not on/off). It carries three segments since v1.12 — auto-assign, pre-allocated and modify existing (SPEC §19) — and the third reads as a peer of the other two, not as an option hung off one of them.
 - File drop zones: dashed 1.5px `--line`, 96px tall, icon-free; on success collapse to a compact row — filename (mono) + row count + green check + "Replace".
 
 ### 3.5 Status language
@@ -73,6 +73,19 @@ Chips (12px, radius 6px): `--b1`/`--action` "Scheduled", `--warn-tint`/`--warn` 
 
 ### 3.6 Blocking panel (Session 7)
 Opens as a right-side sheet (420px, `--surface`, `--line` left border), not a modal: coach select at top, then the term ribbon rendered as one interactive row per §3.1 states, a date input beneath for single-date blocks, and a list of current blocks with Remove. Clicking a week cell toggles it. Sheet never covers the results table entirely. The select's first entry is "All coaches" (SPEC §11.2); a week one coach inherits from an all-coaches block keeps the blocked treatment but takes a dashed border and a flat `--surface` fill, so an inherited week reads as *not yours to toggle* without inventing a second colour.
+
+### 3.7 Existing bookings (SPEC §19)
+
+In modify-existing mode the coach grid shows the previous run's bookings in the
+cells they hold. They take `--dead` with a dashed border — the same "not yours
+to act on" treatment §3.1 gives an excluded week and §3.6 gives an inherited
+block — and they are rendered as plain list items, not buttons, so keyboard
+focus never lands on something that cannot be acted on. The meta line ends with
+the word "existing", so the state is never carried by fill alone (§5). Flags
+raised against the uploaded schedule are `--warn-tint` chips in a table inside
+the **Existing schedule** card: one row per flag, naming the student, the coach
+and the time, because each one is a thing for the user to check rather than
+something the tool has already put right.
 
 ## 4. Copy rules
 Sentence case everywhere. Buttons name the action's result: "Export appointments", not "Submit". The week-normalisation notice reads: "Week 1 will start Monday 7 September (moved from your selected date)." Counts are sentences, not dashboards: "62 of 64 students scheduled · 2 exceptions". No exclamation marks, no "Oops".

@@ -385,7 +385,10 @@ export function buildCoachAssignmentAoa(assignments) {
 export function buildCoachAssignmentsWorkbook(assignments, mode = 'auto') {
   // Data problems are checked before SheetJS is touched, so a run with a
   // missing Coach SF ID reports that rather than an unrelated library error.
-  if (mode !== 'auto') {
+  // Auto-assign, and the modify-existing top-up that schedules by the same
+  // rules (SPEC.md §19.6). Pre-allocated is refused: there the student→coach
+  // mapping is the user's own pairings file.
+  if (mode !== 'auto' && mode !== 'modify-existing') {
     throw new Error('The coach assignments export is only available in auto-assign mode.');
   }
   if (!assignments || assignments.length === 0) {

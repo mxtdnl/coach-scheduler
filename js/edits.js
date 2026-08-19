@@ -43,6 +43,7 @@ export const EDIT_REFUSALS = {
   SLOT_FULL: 'slot full',
   DOUBLE_BOOKED: 'double booked',
   BLOCKED_WEEK: 'coach blocked',
+  EXISTING_BOOKING: 'existing booking',
 };
 
 /** The §17.6 soft warnings: the edit is applied, and the warning sticks to it. */
@@ -52,6 +53,23 @@ export const EDIT_WARNINGS = {
 };
 
 const idOf = (student) => String(student?.contactSfId ?? '');
+
+/**
+ * The placements every occupancy check has to see: this run's own, plus the
+ * bookings a previous run already made (SPEC.md §19.5). The locked ones are
+ * never editable — they belong to a schedule that has already been exported —
+ * but they hold their cells exactly as a live placement does, so nothing new
+ * can be booked over them.
+ */
+function withLocked(context, placements) {
+  const locked = context?.lockedPlacements || [];
+  return locked.length === 0 ? placements || [] : [...(placements || []), ...locked];
+}
+
+/** Whether an id belongs to an existing booking rather than an editable placement. */
+function isLockedId(context, contactSfId) {
+  return (context?.lockedPlacements || []).some((placement) => idOf(placement.student) === String(contactSfId));
+}
 
 /** The (coach, slot) cell a position belongs to (SPEC.md §17.2). */
 export function positionKey(coach, day, start) {
@@ -211,11 +229,17 @@ export function validatePosition(context, placements, { student, slot, offset, i
       placement.offset === offset
   );
   if (occupant) {
+    // An existing booking says so: it is not a placement this run made, so
+    // "swap with them" is not an answer either (SPEC.md §19.5).
     return refusal(
-      EDIT_REFUSALS.DOUBLE_BOOKED,
-      `${coach} is already meeting ${occupant.student.studentName} on ${slot.day} at ${minutesToTime(
-        slot.start
-      )}, offset ${offset}. Two students on one offset would double-book the coach.`
+      occupant.locked ? EDIT_REFUSALS.EXISTING_BOOKING : EDIT_REFUSALS.DOUBLE_BOOKED,
+      occupant.locked
+        ? `${coach} already meets ${occupant.student.studentName} on ${slot.day} at ${minutesToTime(
+            slot.start
+          )}, offset ${offset}, in the schedule you uploaded. Existing bookings cannot be moved from here — choose another position.`
+        : `${coach} is already meeting ${occupant.student.studentName} on ${slot.day} at ${minutesToTime(
+            slot.start
+          )}, offset ${offset}. Two students on one offset would double-book the coach.`
     );
   }
 
@@ -330,7 +354,9 @@ export function validateMove(context, placements, request) {
 
   // The student's own current position is not an obstacle to their own move.
   const ignoreIds = new Set([idOf(student)]);
-  const free = freeOffsetsIn(list, slot, ignoreIds);
+  // Existing bookings (SPEC.md §19.5) occupy their cells for every check below.
+  const occupiedList = withLocked(context, list);
+  const free = freeOffsetsIn(occupiedList, slot, ignoreIds);
   if (free.length === 0) {
     return {
       ok: false,
@@ -352,7 +378,7 @@ export function validateMove(context, placements, request) {
   // substitution: "put them on offset 2" and "put them wherever fits" are
   // different requests.
   if (request.offset && !free.includes(request.offset)) {
-    const occupant = list.find(
+    const occupant = occupiedList.find(
       (placement) =>
         placement.coach === slot.coach &&
         placement.slot.day === slot.day &&
@@ -362,10 +388,14 @@ export function validateMove(context, placements, request) {
     return {
       ok: false,
       refusal: refusal(
-        EDIT_REFUSALS.DOUBLE_BOOKED,
+        occupant?.locked ? EDIT_REFUSALS.EXISTING_BOOKING : EDIT_REFUSALS.DOUBLE_BOOKED,
         `${slot.coach} is already meeting ${occupant?.student?.studentName || 'another student'} on ${
           slot.day
-        } at ${minutesToTime(slot.start)}, offset ${request.offset}. Two students on one offset would double-book the coach.`
+        } at ${minutesToTime(slot.start)}, offset ${request.offset}.${
+          occupant?.locked
+            ? ' That is an existing booking from the schedule you uploaded, and it cannot be moved from here.'
+            : ' Two students on one offset would double-book the coach.'
+        }`
       ),
       weeks: [],
       warnings: [],
@@ -395,13 +425,13 @@ export function validateMove(context, placements, request) {
     };
   }
 
-  const blocked = validatePosition(context, list, { student, slot, offset, ignoreIds });
+  const blocked = validatePosition(context, occupiedList, { student, slot, offset, ignoreIds });
   if (blocked) {
     return { ok: false, refusal: blocked, weeks: [], warnings: [], offset: null, edit: null };
   }
 
   const next = nextPlacements(list, [{ student, coach: slot.coach, slot, offset }]);
-  const warnings = warningsFor(context, next, { coach: slot.coach, day: slot.day });
+  const warnings = warningsFor(context, withLocked(context, next), { coach: slot.coach, day: slot.day });
 
   return {
     ok: true,
@@ -434,6 +464,21 @@ export function validateSwap(context, placements, request) {
   const b = findPlacement(list, request.withContactSfId);
 
   if (!a || !b) {
+    // A cell held by an existing booking (SPEC.md §19.5) is not swappable
+    // either, and says why rather than reporting the student as unplaced.
+    const lockedId = [request.contactSfId, request.withContactSfId].find((id) => isLockedId(context, id));
+    if (lockedId) {
+      const locked = (context.lockedPlacements || []).find((placement) => idOf(placement.student) === String(lockedId));
+      return {
+        ok: false,
+        refusal: refusal(
+          EDIT_REFUSALS.EXISTING_BOOKING,
+          `${locked.student.studentName} is an existing booking from the schedule you uploaded, so their place cannot be swapped. Only students this run scheduled can be moved.`
+        ),
+        warnings: [],
+        edit: null,
+      };
+    }
     const missing = !a ? request.student : request.withStudent;
     const name = missing?.studentName || 'That student';
     return {
@@ -459,8 +504,9 @@ export function validateSwap(context, placements, request) {
   const aTo = { student: a.student, coach: b.coach, slot: b.slot, offset: b.offset };
   const bTo = { student: b.student, coach: a.coach, slot: a.slot, offset: a.offset };
 
+  const occupiedList = withLocked(context, list);
   for (const move of [aTo, bTo]) {
-    const blocked = validatePosition(context, list, { ...move, ignoreIds });
+    const blocked = validatePosition(context, occupiedList, { ...move, ignoreIds });
     if (blocked) {
       return {
         ok: false,
@@ -471,7 +517,7 @@ export function validateSwap(context, placements, request) {
     }
   }
 
-  const next = nextPlacements(list, [aTo, bTo]);
+  const next = withLocked(context, nextPlacements(list, [aTo, bTo]));
   const warnings = [
     ...warningsFor(context, next, { coach: aTo.coach, day: aTo.slot.day }),
     ...warningsFor(context, next, { coach: bTo.coach, day: bTo.slot.day }),
@@ -578,8 +624,9 @@ function replayOne(context, placements, edit) {
   }
 
   const ignoreIds = new Set(moves.map((move) => idOf(move.student)));
+  const occupiedList = withLocked(context, placements);
   for (const move of moves) {
-    const blocked = validatePosition(context, placements, { ...move, ignoreIds });
+    const blocked = validatePosition(context, occupiedList, { ...move, ignoreIds });
     if (blocked) return { ok: false, refusal: blocked };
   }
 
@@ -690,7 +737,7 @@ export function buildCoachGrid(context, placements, coach) {
   const coachSlots = (context.slots || []).filter((slot) => slot.coach === coach);
   const days = DAY_ORDER.filter((day) => coachSlots.some((slot) => slot.day === day));
   const times = [...new Set(coachSlots.map((slot) => slot.start))].sort((a, b) => a - b);
-  const occupancy = occupancyOf(placements);
+  const occupancy = occupancyOf(withLocked(context, placements));
   const blockNames = new Map((context.classBlocks || []).map((block) => [block.id, block.name || '(unnamed)']));
 
   const rows = times.map((start) => ({
@@ -708,6 +755,9 @@ export function buildCoachGrid(context, placements, coach) {
           weeks: weeksForOffset(offset),
           student: placement ? placement.student : null,
           free: !placement,
+          // An existing booking from a previous run (SPEC.md §19.5): shown in
+          // its cell, and not a control — it cannot be moved or swapped.
+          locked: Boolean(placement?.locked),
         });
       }
       return {

@@ -488,6 +488,268 @@ export function checkStudentClassBlocks(fileName, rows, classBlocks) {
   return warnings;
 }
 
+// ---- The previous run's appointments export (SPEC.md §19.1) ----
+//
+// Modify-existing mode reads back the appointments file an earlier run wrote
+// (§7.1), so the columns expected here are that file's default columns. Only
+// the ones the schedule is rebuilt from are required; the rest are read when
+// present and ignored when not, which is what lets a file written with a
+// §7.2 custom layout still be used as long as it kept the columns that say
+// who met whom, and when.
+
+/** Canonical header → the alternative spellings accepted for it. */
+const APPOINTMENT_HEADER_ALIASES = {
+  'contact sf id (student)': ['contact sf id', 'student contact sf id'],
+  'meeting start date & time': ['meeting start date and time', 'meeting start', 'start date & time'],
+  'meeting end date & time': ['meeting end date and time', 'meeting end', 'end date & time'],
+};
+
+const EXISTING_APPOINTMENT_COLUMNS = [
+  'Student Name',
+  'Contact SF ID (Student)',
+  'Student Email',
+  'Coach Name',
+  'Coach SF ID',
+  'Coach Email',
+  'Meeting Start Date & Time',
+  'Meeting End Date & Time',
+];
+
+/**
+ * Rewrites accepted header spellings to the canonical ones, so the row parser
+ * below has exactly one name to look each column up by. A file that already
+ * uses the canonical header is returned unchanged.
+ */
+function canonicaliseAppointmentHeaders(sheetRows) {
+  if (!sheetRows || sheetRows.length === 0) return sheetRows;
+  const header = (sheetRows[0] || []).map((cell) => String(cell ?? '').trim());
+  const present = new Set(header.map((cell) => cell.toLowerCase()));
+  const rewritten = header.map((cell) => {
+    const lower = cell.toLowerCase();
+    const canonical = Object.keys(APPOINTMENT_HEADER_ALIASES).find(
+      (name) => !present.has(name) && APPOINTMENT_HEADER_ALIASES[name].includes(lower)
+    );
+    return canonical ? canonical : cell;
+  });
+  return [rewritten, ...sheetRows.slice(1)];
+}
+
+const ISO_DATE_TIME = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{1,2}):(\d{2})(?::(\d{2}))?/;
+
+function pad(value, width = 2) {
+  return String(value).padStart(width, '0');
+}
+
+/**
+ * One `Meeting Start/End Date & Time` cell, as the campus wall-clock date and
+ * minute it names (SPEC.md §7.1 writes these as offset-bearing local times, so
+ * the naive half of the value *is* the campus clock and needs no conversion).
+ * Excel date values and serials are accepted too, for a file that has been
+ * through a spreadsheet's own formatting.
+ */
+function parseDateTimeValue(raw) {
+  if (raw instanceof Date && !Number.isNaN(raw.getTime())) {
+    return {
+      date: `${raw.getFullYear()}-${pad(raw.getMonth() + 1)}-${pad(raw.getDate())}`,
+      minutes: raw.getHours() * 60 + raw.getMinutes(),
+    };
+  }
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    // Excel serial: whole days since 1899-12-30, fraction of a day for the time.
+    const days = Math.floor(raw);
+    const minutes = Math.round((raw - days) * 24 * 60);
+    const date = new Date(Date.UTC(1899, 11, 30));
+    date.setUTCDate(date.getUTCDate() + days);
+    return {
+      date: `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`,
+      minutes,
+    };
+  }
+  if (typeof raw === 'string') {
+    const match = ISO_DATE_TIME.exec(raw.trim());
+    if (!match) return null;
+    const [, year, month, day, hours, minutes] = match;
+    if (Number(month) < 1 || Number(month) > 12 || Number(day) < 1 || Number(day) > 31) return null;
+    if (Number(hours) > 23 || Number(minutes) > 59) return null;
+    return { date: `${year}-${month}-${day}`, minutes: Number(hours) * 60 + Number(minutes) };
+  }
+  return null;
+}
+
+/** The weekday a `YYYY-MM-DD` date falls on. */
+function dayOfIsoDate(isoDate) {
+  const [year, month, day] = isoDate.split('-').map(Number);
+  const date = new Date(year, month - 1, day);
+  if (Number.isNaN(date.getTime())) return null;
+  return DAY_NAMES[(date.getDay() + 6) % 7];
+}
+
+function optionalText(raw, headerIndex, columnName) {
+  const column = headerIndex[columnName.toLowerCase()];
+  if (column === undefined) return '';
+  const value = raw[column];
+  return isBlank(value) ? '' : String(value).trim();
+}
+
+function parseExistingAppointmentRow(raw, rowNumber, headerIndex, fileName, errors) {
+  const studentName = requiredText(raw, headerIndex, 'Student Name', rowNumber, fileName, errors);
+  const contactSfId = requiredText(raw, headerIndex, 'Contact SF ID (Student)', rowNumber, fileName, errors);
+  const studentEmail = requiredEmail(raw, headerIndex, 'Student Email', rowNumber, fileName, errors);
+  const coachName = requiredText(raw, headerIndex, 'Coach Name', rowNumber, fileName, errors);
+  const coachSfId = requiredText(raw, headerIndex, 'Coach SF ID', rowNumber, fileName, errors);
+  const coachEmail = requiredEmail(raw, headerIndex, 'Coach Email', rowNumber, fileName, errors);
+
+  const startRaw = raw[headerIndex['meeting start date & time']];
+  const endRaw = raw[headerIndex['meeting end date & time']];
+  let start = null;
+  let end = null;
+
+  if (isBlank(startRaw)) {
+    addIssue(errors, fileName, rowNumber, 'Missing Meeting Start Date & Time value.');
+  } else {
+    start = parseDateTimeValue(startRaw);
+    if (start === null) {
+      addIssue(
+        errors,
+        fileName,
+        rowNumber,
+        `Could not understand Meeting Start Date & Time "${String(startRaw).trim()}". Use the exported form, 2026-09-07T09:00:00+01:00.`
+      );
+    }
+  }
+  if (isBlank(endRaw)) {
+    addIssue(errors, fileName, rowNumber, 'Missing Meeting End Date & Time value.');
+  } else {
+    end = parseDateTimeValue(endRaw);
+    if (end === null) {
+      addIssue(
+        errors,
+        fileName,
+        rowNumber,
+        `Could not understand Meeting End Date & Time "${String(endRaw).trim()}". Use the exported form, 2026-09-07T10:00:00+01:00.`
+      );
+    }
+  }
+
+  if (start && end) {
+    if (start.date !== end.date) {
+      addIssue(errors, fileName, rowNumber, 'A meeting must start and end on the same day.');
+      end = null;
+    } else if (end.minutes <= start.minutes) {
+      addIssue(errors, fileName, rowNumber, 'Meeting End Date & Time must be after Meeting Start Date & Time.');
+      end = null;
+    }
+  }
+
+  const day = start ? dayOfIsoDate(start.date) : null;
+  if (start && day === null) {
+    addIssue(errors, fileName, rowNumber, `"${start.date}" is not a real date.`);
+  }
+
+  if (
+    studentName === null ||
+    contactSfId === null ||
+    studentEmail === null ||
+    coachName === null ||
+    coachSfId === null ||
+    coachEmail === null ||
+    !start ||
+    !end ||
+    day === null
+  ) {
+    return null;
+  }
+
+  return {
+    studentName,
+    contactSfId,
+    studentEmail,
+    classBlock: optionalText(raw, headerIndex, 'Class Block'),
+    serviceName: optionalText(raw, headerIndex, 'Service Name'),
+    coachName,
+    coachSfId,
+    coachEmail,
+    date: start.date,
+    day,
+    start: start.minutes,
+    end: end.minutes,
+    _row: rowNumber,
+  };
+}
+
+/**
+ * Whole-file checks on a previous run's export: one student is one person, so
+ * rows that disagree about their name, email or coach are named rather than
+ * silently resolved to whichever row came first.
+ */
+function finishExistingAppointments(fileName, result) {
+  const seen = new Map();
+  result.rows.forEach((row) => {
+    const first = seen.get(row.contactSfId);
+    if (!first) {
+      seen.set(row.contactSfId, row);
+      return;
+    }
+    [
+      ['Student Name', 'studentName'],
+      ['Student Email', 'studentEmail'],
+      ['Coach Name', 'coachName'],
+    ].forEach(([label, field]) => {
+      if (row[field] === first[field]) return;
+      addIssue(
+        result.warnings,
+        fileName,
+        row._row,
+        `Contact SF ID "${row.contactSfId}" has two different ${label} values: "${first[field]}" (row ${first._row}) and "${row[field]}" (row ${row._row}). The first is used.`
+      );
+    });
+    if (row.date === first.date && row.start === first.start && row.coachName === first.coachName) {
+      addIssue(
+        result.warnings,
+        fileName,
+        row._row,
+        `${row.studentName} has the same meeting twice: ${row.date} at ${minutesToTime(row.start)} (rows ${first._row} and ${row._row}).`
+      );
+    }
+  });
+  return result;
+}
+
+/** The previous-export rules applied to an already-read sheet (see parseSheetRows). */
+export function parseExistingAppointmentsSheet(fileName, sheetRows) {
+  return finishExistingAppointments(
+    fileName,
+    parseSheetRows(
+      fileName,
+      canonicaliseAppointmentHeaders(sheetRows),
+      EXISTING_APPOINTMENT_COLUMNS,
+      parseExistingAppointmentRow
+    )
+  );
+}
+
+export async function parseExistingAppointments(file) {
+  const fileName = file.name;
+  let sheetRows;
+  try {
+    sheetRows = await readSheetRows(file);
+  } catch (e) {
+    if (e && e.code === XLSX_MISSING) throw e;
+    return {
+      rows: [],
+      errors: [
+        {
+          file: fileName,
+          row: null,
+          message: `Could not read this file. Make sure it is a valid .xlsx file saved from Excel. (${describeError(e)})`,
+        },
+      ],
+      warnings: [],
+    };
+  }
+  return parseExistingAppointmentsSheet(fileName, sheetRows);
+}
+
 export async function parsePairings(file) {
   return parseSheet(file, ['Contact SF ID', 'Coach Name'], (raw, rowNumber, headerIndex, fileName, errors) => {
     const idCol = headerIndex['contact sf id'];

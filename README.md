@@ -32,7 +32,7 @@ own computer and are never sent anywhere. Closing the tab throws the data away.
 3. [The four templates and their columns](#3-the-four-templates-and-their-columns)
 4. [Step-by-step walkthrough](#4-step-by-step-walkthrough)
 4a. [The Edit step: moving students by hand](#the-edit-step-moving-students-by-hand)
-5. [The two modes](#5-the-two-modes)
+5. [The three modes](#5-the-three-modes)
 6. [FTE: sharing students between coaches](#6-fte-sharing-students-between-coaches)
 7. [The export files](#7-the-export-files)
 8. [Blocked weeks and dates](#8-blocked-weeks-and-dates)
@@ -212,6 +212,23 @@ Only needed in **pre-allocated** mode. One row per student.
 | Contact SF ID | Yes | Must match an ID in the student list. |
 | Coach Name | Yes | Must match a coach in the availability file, spelled the same way. |
 
+### The previous appointments export (modify-existing mode)
+
+Only needed in **modify existing** mode, and there is no template for it: it is
+the `appointments_….xlsx` file an earlier run of this tool produced. Upload it
+as it is.
+
+The columns it must still have are the ones that say who met whom and when:
+Student Name, Contact SF ID (Student), Student Email, Coach Name, Coach SF ID,
+Coach Email, Meeting Start Date & Time and Meeting End Date & Time. If you
+changed the export layout (§7.3) and kept those, the file still works. Class
+Block, Service Name, Meeting Status and Rescheduled From Week are used if they
+are there and skipped if they are not.
+
+If two rows disagree about one student — a different name, email or coach for
+the same Contact SF ID — you get a warning naming both rows, and the first one
+is used. The file is not rejected for it: those meetings have already gone out.
+
 ---
 
 ## 4. Step-by-step walkthrough
@@ -255,6 +272,9 @@ checked the moment it arrives.
 
 A file with errors is not used at all until you fix it. **Clear all uploads**
 empties every box at once.
+
+The boxes on offer follow the mode: pre-allocated adds the pairings box, and
+modify existing adds the **Previous appointments export** box at the top.
 
 ### Step 3 — Review
 
@@ -476,7 +496,7 @@ student's class block on every row of their four meetings.
 
 ---
 
-## 5. The two modes
+## 5. The three modes
 
 ### Auto-assign
 
@@ -509,15 +529,63 @@ Three things can go wrong here, and each is reported per student:
 - a student whose coach only has hours left that clash with their own class
   block → *no free slot outside their class block*
 
+### Modify existing
+
+Use this when a term has already been scheduled and more students have since
+arrived. Instead of rebuilding the whole term — which would give people who
+already have meetings in their calendars a different schedule — the tool takes
+the run you have as given and fits the new students around it.
+
+You upload one extra file: **the appointments export the earlier run
+produced**. Not a template, not something you fill in — the same
+`appointments_….xlsx` you downloaded and sent out. Its meetings are read back
+as bookings that already exist:
+
+- the students in it keep their coach, day, time and weeks exactly, and are
+  never rescheduled;
+- their hours are held: no new student is put in one of them;
+- they count towards their coach's load, so quotas and the even spread across a
+  coach's days are worked out over the coach's whole week, not just the part
+  being filled now.
+
+Everything else works as in auto-assign: FTE, quotas, class blocks, blocked
+weeks, the Edit step. The new students are placed by exactly the same rules.
+
+**Your student list can be the whole cohort or just the new arrivals.** Anyone
+whose Contact SF ID is already in the uploaded schedule is recognised and left
+alone, so you can re-upload the same list you used last time with the new rows
+appended.
+
+**The exports contain only the students this run added.** The appointments
+file, the coach assignments file and the coach calendars all cover the new
+students and nobody else — the earlier run's files were produced and sent out
+already, and its meetings have not changed.
+
+**Flags, not fixes.** The coach availability and class schedule you upload now
+may no longer match the term those bookings were made in. Review shows an
+**Existing schedule** card listing everything that does not line up: a booking
+in an hour the availability file no longer covers, a booking that runs during a
+class in that student's own block, a coach who has left the availability file,
+a meeting outside the 15 term weeks, or a clash inside the uploaded file
+itself. Nothing is changed for you — those are real meetings in real diaries —
+so each line names the student, the coach and the time, and leaves the decision
+to you.
+
+On the Edit step the existing bookings appear in the coach grid, greyed and
+labelled *existing*. You cannot pick them up or swap with them: they belong to
+a run that has already gone out. The new students can be moved around them as
+usual.
+
 You can switch modes at any time. Uploaded files stay where they are; the
-pairings box appears and disappears with the mode.
+pairings box and the previous-appointments box appear and disappear with the
+mode.
 
 ---
 
 ## 6. FTE: sharing students between coaches
 
-FTE is how you say "this coach is part-time". It only appears in auto-assign
-mode, on the Review step, with one box per coach.
+FTE is how you say "this coach is part-time". It appears in auto-assign and
+modify-existing modes, on the Review step, with one box per coach.
 
 - The scale is 0.05 to 1.00. Everyone starts at **1.00** (full-time).
 - Set a coach to 0.50 and they get roughly half the students of a full-time
@@ -553,7 +621,7 @@ Press **Export appointments** in the Export step. This is the file described
 in [section 4](#step-6--export), and you can reshape its columns — see
 [7.3](#73-changing-the-appointment-export-columns).
 
-### 7.2 The coach assignments export (auto-assign only)
+### 7.2 The coach assignments export (auto-assign and modify existing)
 
 On the Export step, the **Coach assignments** card shows exactly
 what this file will contain, with an **Export coach assignments** button beside
@@ -839,6 +907,10 @@ per-student coaching availability, more than one campus per run, public
 holidays, editing a **single dated meeting** on its own, and removing a student
 from a generated schedule. The Edit step moves a student's whole placement —
 all four meetings together — and never one occurrence of it.
+
+Modify-existing mode adds students to a term that has already been scheduled,
+but it never changes that term: an existing booking cannot be moved, swapped or
+removed. To change one, change the run that made it.
 
 ---
 

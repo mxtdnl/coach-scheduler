@@ -1292,6 +1292,21 @@ button.edit-position-taken:hover {
   color: var(--action);
 }
 
+/* An existing booking from an uploaded schedule (SPEC.md §19.5). It is not a
+   control, so it takes the paper fill and the "dead" hatch the ribbon gives an
+   excluded week: occupied, and not yours to move. The word "existing" in the
+   meta line says the same thing without relying on the fill. */
+.edit-position-locked {
+  background: var(--dead);
+  border-style: dashed;
+  color: var(--ink-2);
+  cursor: not-allowed;
+}
+
+.edit-position-locked .edit-position-name {
+  color: var(--ink-2);
+}
+
 .edit-position-name {
   display: block;
   font: 500 13px/18px var(--ui);
