@@ -193,6 +193,33 @@ Run after Session 11. Replace `SPEC.md` with the v1.7 version before starting.
 
 ---
 
+### Session 13 — Modify an existing run (v1.12)
+
+**Read first:** SPEC.md §19 and §20, plus §5, §7.3 and §9.
+
+Adds the third assignment mode, **Modify existing**: the previous run's
+appointments export is uploaded again, its meetings are treated as booked, and
+only the students who still need a coach are scheduled — and exported.
+
+What it touches:
+
+- `js/parse.js` — `parseExistingAppointments` / `parseExistingAppointmentsSheet`,
+  the §19.1 read-back of a §7.1 export;
+- `js/existing.js` — new, pure: occupancy, per-coach load, locked placements
+  and the §19.3 flags;
+- `js/scheduler.js` — `offsetForWeek`, `placeKey`, `computeTopUpQuotas`, and
+  `schedule`'s `occupied` / `priorCounts` options, which are empty in every
+  other run;
+- `js/edits.js` — `context.lockedPlacements`: existing bookings occupy their
+  grid cells and refuse a move onto them or a swap with them (§19.5);
+- `js/exporter.js` — the §7.3 batch upload accepts `modify-existing`;
+- `index.html` / `js/app.js` / `styles.css` — the third mode, the extra upload
+  card, the **Existing schedule** card, and the grid's locked positions.
+
+**Done when:** tests.html passes, including the §20 group; a run whose student
+list holds both old and new students schedules only the new ones; and every
+export names only them.
+
 ## Part D — Ongoing use and future changes
 
 - **Using the tool each term:** open the site URL, set the start date, upload the term's files, review, export. Nothing is stored server-side; localStorage keeps only your settings on that browser.

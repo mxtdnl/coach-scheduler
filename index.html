@@ -111,6 +111,13 @@
                 <small>Use a pairings file that fixes each student's coach.</small>
               </span>
             </label>
+            <label class="toggle-option">
+              <input type="radio" name="mode" id="mode-modify-existing" value="modify-existing" />
+              <span>
+                <strong>Modify existing</strong>
+                <small>Add students to a term already scheduled. Upload that run's appointments export; only the new students are scheduled and exported.</small>
+              </span>
+            </label>
           </div>
         </div>
 
@@ -143,6 +150,23 @@
 
         <div class="upload-toolbar">
           <button type="button" id="clear-uploads-btn" class="btn btn-destructive">Clear all uploads</button>
+        </div>
+
+        <!-- SPEC.md §19.1 — modify-existing mode only: the appointments export
+             the previous run produced, read back as the bookings that already
+             exist. -->
+        <div class="card upload-card" id="existing-appointments-upload-card" hidden>
+          <h2>Previous appointments export</h2>
+          <p class="help-text">The appointments file the earlier run exported. Its meetings are treated as booked: they hold their coaches' slots, they count towards each coach's load, and the students in it are not scheduled again.</p>
+          <label class="dropzone" data-upload="existingAppointments">
+            <input type="file" accept=".xlsx" class="file-input" hidden />
+            <span class="dropzone-text">Drag and drop the file here, or click to choose</span>
+            <span class="dropzone-check" hidden>&#10003;</span>
+            <span class="dropzone-filename" hidden></span>
+            <span class="dropzone-meta" hidden></span>
+            <span class="dropzone-replace" hidden>Replace</span>
+          </label>
+          <div class="upload-result" hidden></div>
         </div>
 
         <div class="card upload-card">

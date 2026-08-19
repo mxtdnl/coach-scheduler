@@ -1,6 +1,6 @@
 # Coaching Meeting Scheduler — Technical Specification
 
-Version 1.11 — 19 August 2026 (§11.2 adds an **All coaches** entry to the blocking panel's coach selector: one stored block, expanded to every coach in the run when the schedule is built, for a week or date on which nobody meets; §11.3 redistribution is unchanged, each expanded coach-week being treated exactly as a block added for that coach by name; v1.10's §7.3/§13 add a second column to the coach-assignments batch upload: **Student Contact SF ID**, in position 2 immediately after `Student Name`, carrying the student's existing `Contact SF ID` (§3.3) — an eight-column file now, with no new input field, no new template column and no new validation; v1.9's §17 adds a manual **Edit** step between Review and Results: a coach-at-a-time grid and an unassigned tray from which a student's whole placement can be moved, placed or swapped, with hard refusals, soft warnings, an edits list and per-edit undo; §6 inserts Edit into the step list; §14 the Bookings card **moves from Results to Edit** and is no longer read-only; §7.4 the coach calendar becomes a dedicated **Coach calendars** card on Results — one row per coach, plus an "Export all coaches" control — instead of a control nested in the Bookings card; §10 is narrowed to editing a single dated occurrence; §5.1's quota and §4.7's day balance are stated as binding the automatic pass, with a manual breach warning rather than refusing; v1.8 made §4.7 a coach's meetings **spread as evenly as possible across the days that coach has valid slots on**, instead of piling onto their earliest days; §4.6, §5.1 and §5.2 restate the assignment order accordingly and §11.3 states explicitly that it does not re-balance days; v1.7 made §3.1 the class-block total **13.5 hours** with anything else a **warning** rather than a rejection — the file uploads and schedules; v1.6 made §7.4 the coach calendar export a **single `.ics` file per coach**, holding one `VEVENT` per meeting, replacing the v1.5 ZIP of one file per meeting; v1.5 added §14/§15 the Results booking views — by coach and by student — and the coach calendar export itself; §7.3/§13 the auto-assign coach-assignments batch upload from v1.4; §3.1/§4.4a/§5.3 multiple class blocks from v1.3; §6.1 Campus and §7.1 export columns from v1.2; §11 Blocked weeks/dates from v1.1)
+Version 1.12 — 19 August 2026 (§19/§20 add a third assignment mode, **Modify existing**: the previous run's appointments export is re-uploaded and treated as booked, the students in it are left exactly as they are, the students who still need a coach are placed around those bookings under every rule in §4/§5/§11 — the §5.1 quota and the §4.7 day balance counting the existing load — and only the students this run added are exported; §5 gains the mode, §6 the extra upload, §7.3 accepts it alongside auto-assign, and §9 gains `offsetForWeek`, `placeKey`, `computeTopUpQuotas`, `schedule`'s `occupied`/`priorCounts` options and the new `existing.js`; v1.11's §11.2 adds an **All coaches** entry to the blocking panel's coach selector: one stored block, expanded to every coach in the run when the schedule is built, for a week or date on which nobody meets; §11.3 redistribution is unchanged, each expanded coach-week being treated exactly as a block added for that coach by name; v1.10's §7.3/§13 add a second column to the coach-assignments batch upload: **Student Contact SF ID**, in position 2 immediately after `Student Name`, carrying the student's existing `Contact SF ID` (§3.3) — an eight-column file now, with no new input field, no new template column and no new validation; v1.9's §17 adds a manual **Edit** step between Review and Results: a coach-at-a-time grid and an unassigned tray from which a student's whole placement can be moved, placed or swapped, with hard refusals, soft warnings, an edits list and per-edit undo; §6 inserts Edit into the step list; §14 the Bookings card **moves from Results to Edit** and is no longer read-only; §7.4 the coach calendar becomes a dedicated **Coach calendars** card on Results — one row per coach, plus an "Export all coaches" control — instead of a control nested in the Bookings card; §10 is narrowed to editing a single dated occurrence; §5.1's quota and §4.7's day balance are stated as binding the automatic pass, with a manual breach warning rather than refusing; v1.8 made §4.7 a coach's meetings **spread as evenly as possible across the days that coach has valid slots on**, instead of piling onto their earliest days; §4.6, §5.1 and §5.2 restate the assignment order accordingly and §11.3 states explicitly that it does not re-balance days; v1.7 made §3.1 the class-block total **13.5 hours** with anything else a **warning** rather than a rejection — the file uploads and schedules; v1.6 made §7.4 the coach calendar export a **single `.ics` file per coach**, holding one `VEVENT` per meeting, replacing the v1.5 ZIP of one file per meeting; v1.5 added §14/§15 the Results booking views — by coach and by student — and the coach calendar export itself; §7.3/§13 the auto-assign coach-assignments batch upload from v1.4; §3.1/§4.4a/§5.3 multiple class blocks from v1.3; §6.1 Campus and §7.1 export columns from v1.2; §11 Blocked weeks/dates from v1.1)
 
 ## 1. Purpose
 
@@ -28,6 +28,7 @@ A run may contain **several class blocks** — distinct student cohorts, each wi
 │   ├── exporter.js     # Default + custom-mapped appointments export, the §7.3 batch upload, and the §7.4 coach calendar
 │   ├── bookings.js     # Pure view models for the §14 booking views
 │   ├── edits.js        # Pure §17 manual-edit overlay: validation and replay, no DOM
+│   ├── existing.js     # Pure §19 read-back of a previous run: occupancy, load, and the §19.3 flags
 │   ├── ics.js          # iCalendar (RFC 5545) serialiser: one calendar, one VEVENT per meeting
 │   ├── timezone.js     # Campus → IANA zone, offset-bearing ISO formatting
 │   └── storage.js      # localStorage read/write helpers
@@ -89,6 +90,11 @@ One row per weekly availability block per coach.
 | Contact SF ID | Yes | Must exist in the student list |
 | Coach Name | Yes | Must exist in the availability file |
 
+### 3.5 Previous appointments export — only in modify-existing mode
+
+Not a template: it is the §7.1 file an earlier run of this tool produced,
+uploaded again. Its columns, its parsing and its validation are §19.1.
+
 ## 4. Scheduling rules (normative)
 
 1. **Term:** 15 weeks. Week 1 begins on the configured start date. The UI accepts any date but normalises to the Monday of that week, with a visible notice when it does.
@@ -118,7 +124,8 @@ One row per weekly availability block per coach.
 
 ## 5. Assignment modes
 
-A toggle selects one of two modes.
+A toggle selects one of three modes: the two below, and **Modify existing**
+(§19), which adds students to an already-scheduled term by the §5.1 rules.
 
 ### 5.1 Auto-assign (availability + FTE)
 
@@ -151,8 +158,8 @@ In no case is a student scheduled against an assumed or defaulted class block. T
 A single page with a stepper:
 
 1. **Setup** — start date picker (with Monday normalisation notice), campus selector (§6.1), mode toggle, template download links.
-2. **Upload** — drag-and-drop or file pickers for the 3 (or 4) files, with per-file validation results shown immediately (row counts, errors with row numbers).
-3. **Review** — a **Class blocks** card (§6.3); FTE editor (auto mode only); a capacity summary table (coach, valid slots, capacity, FTE, quota); warnings.
+2. **Upload** — drag-and-drop or file pickers for the 3 files (4 in pre-allocated mode, and 4 in modify-existing mode, whose extra file is the previous run's appointments export, §19.1), with per-file validation results shown immediately (row counts, errors with row numbers).
+3. **Review** — in modify-existing mode an **Existing schedule** card (§19.3) above the rest; a **Class blocks** card (§6.3); FTE editor (auto and modify-existing modes); a capacity summary table (coach, valid slots, capacity, FTE, quota); warnings.
 4. **Edit** — the manual-editing step (§17): an **Unassigned students** tray, a coach-at-a-time **Coach grid** of (coach, slot) cells **below it**, and an **Edits (N)** list with per-edit undo. The tray sits **above** the grid, full width, rather than beside it (v1.10), so the reading order matches the action — pick a student up, then put them down — and the grid keeps the whole column for its weekday columns. The step **appears once a schedule has been generated** and requires no edits: a **Continue to Results** action always proceeds. Edit carries no bookings view and no export control: the run's outcome is read on Results and its files are produced on Export.
 5. **Results** — summary (students scheduled / unassigned, per-coach utilisation), a **Class blocks** card (§6.4), an unassigned-students table with reasons (including each student's class block), and the **Bookings** card for inspecting the schedule by coach or by student (§14). Results is where the run is read, not where it is written: it carries no preview, no export button and no export settings.
 6. **Export** — every file the run produces, on one page: a preview of the first 50 appointment rows with the **Export appointments** button, a **Coach calendars** card with one row and one `.ics` download per coach plus an **Export all coaches** control (§7.4), in auto-assign mode only a **Coach assignments** card with the **Export coach assignments** button (§7.3), and the **Export settings** collapsible panel (§7.2). The run therefore produces **two** spreadsheet export files in auto-assign mode and one in pre-allocated mode, plus the per-coach calendar files on demand.
@@ -253,12 +260,13 @@ An editor listing the default fields, allowing the user to: rename a column head
 A **second** export, in the Salesforce batch-upload template's shape. It
 describes **coach assignments, not meetings**: one row per scheduled student.
 
-**Availability.** Offered only when the current run uses **auto-assign** and a
+**Availability.** Offered only when the current run uses **auto-assign** — or
+**modify-existing** (§19.6), which assigns by the same rules — and a
 valid schedule exists. In pre-allocated mode the control is not rendered at
 all — the student→coach mapping there is the user's own pairings file, so a
 "coach assignments" export would state back what was uploaded, and this
 specification scopes the file to auto-assign. `exportCoachAssignments` refuses
-a non-auto mode as well, so the rule holds however the function is reached.
+pre-allocated as well, so the rule holds however the function is reached.
 When no student was assigned a coach, the control is present but disabled.
 
 **Columns (exact headers, exact order).**
@@ -485,6 +493,9 @@ Pure functions, no DOM, so `tests.html` can exercise them:
 - `balancedDayTargets(coachSlots, total)` → `{day: target}` in Mon→Sun order — the §4.7 per-day split of one coach's `total` (quota, or paired-student count), capped by each day's capacity with the remainder redistributed
 - `schedule(students, slots, mode, quotasOrPairings, knownCoaches, {classBlocks})` → `{assignments: [{student, coach, slot, offset}], unassigned: [{student, reason}]}`; omitting `classBlocks` skips the §5.3 checks
 - `expandToAppointments(assignments, startMonday, timeZone)` → appointment rows per §7.1, each carrying the student's `classBlock`
+- `offsetForWeek(week)` → the §4.2 offset a term week belongs to, or null for weeks 4/8/12 — the inverse of `weeksForOffset`, and what turns an already-scheduled meeting's date back into a placement (§19.1)
+- `placeKey(coach, day, start, offset)` → the key one (coach, slot, offset) place is held under (§19.4)
+- `computeTopUpQuotas(coaches, fte, existingCounts, newStudentCount, slotCounts)` → the §19.4 top-up quota: each coach's §5.1 share of the whole cohort, less what they already hold, capped by the places they have left, with the remainder redistributed by FTE
 - `blockedWeekLookup(blocks)` → `(coach, week, day) → boolean`, the §11.2 blocked test built once over a stored block list. Exported since v1.9 so the §17.4 blocked-week refusal reads blocking through the same normalisation the §11.3 post-pass uses
 - `sortAppointments(rows)` → the same rows in §7.1 order (date, start time, coach name, student name). Exported since v1.9 so the §17 overlay can re-sort a schedule it has spliced regenerated rows into, rather than keeping a second copy of the row-order rule
 - `expandClassSessions(classBlock, startMonday)` → one dated row per class per term week for that block, in date order — the class half of the §14.2 student timeline. Weeks 4/8/12 are included: they hold no *coaching*, but classes run as usual. Times stay naive campus wall-clock, exactly as uploaded and as the §4.4a clash check reads them
@@ -540,11 +551,26 @@ clock:
 - `buildCoachGrid(context, placements, coach)` → `{coach, days, rows, slotCount}` — the §17.2 grid as data: rows of start times, cells per weekday, three offset positions each, cells outside availability marked and class-block clashes **named**
 - `describeEdit(edit)` / `describePosition(position)` / `describeWeeks(offset)` / `EDIT_REFUSALS` / `EDIT_WARNINGS` — the strings §17.7 lists and §17.4/§17.6 name
 
-The parsers additionally expose `parseClassScheduleSheet(fileName, sheetRows)` and `parseStudentListSheet(fileName, sheetRows)` — the same validation applied to an already-read array-of-arrays, so `tests.html` can exercise the real rules without SheetJS or a workbook.
+`existing.js` holds the §19 read-back of a previous run. It is pure and
+DOM-free: it turns parsed appointment rows into occupancy, load and flags, and
+does nothing else:
+
+- `buildExistingRun(rows, {slots, classBlocks, startMonday, students, coaches})` → `{students, meetings, placements, occupied, counts, coaches, flags, meetingCount}` — one entry per student with the placement their dates resolve to, the `placeKey`s their meetings hold, how many students each coach holds, and every §19.3 flag
+- `existingPlacements(students, slots)` → the same students as **locked placements**, the shape `edits.js` reads (§19.5)
+- `splitExistingStudents(studentRows, existingRun)` → `{newStudents, alreadyScheduled}`, the §19.2 split by Contact SF ID
+- `totalStudentCount(existingRun, newStudentCount)` / `EXISTING_FLAGS`
+
+The parsers additionally expose `parseClassScheduleSheet(fileName, sheetRows)`, `parseStudentListSheet(fileName, sheetRows)` and `parseExistingAppointmentsSheet(fileName, sheetRows)` (§19.1) — the same validation applied to an already-read array-of-arrays, so `tests.html` can exercise the real rules without SheetJS or a workbook.
 
 ## 10. Out of scope (v1)
 
 Per-student class timetables (a student belongs to a class block, not to a bespoke timetable); student-specific coaching availability; more than one campus per run (§6.1 fixes one location per run; cross-campus scheduling would require per-block zones and absolute-time clash detection); public holidays; **editing a single dated occurrence of a meeting**; removing a student from a generated schedule.
+
+**Widened by v1.12 (normative).** A run may now be *added to*: §19's
+modify-existing mode schedules new students around an already-scheduled term.
+What stays out of scope is changing that term — an existing booking cannot be
+moved, swapped or removed from here (§19.5), and the way to change it is to
+change the run that made it.
 
 **Narrowed by v1.9 (normative).** Until v1.9 this section excluded "editing individual appointments after generation" outright, and "moving a displaced meeting to a different coach". §17 replaces both with something narrower, and the difference matters:
 
@@ -881,6 +907,8 @@ exactly a §9 or §11.5 invariant, which is why none of them is negotiable:
 - any of the **four resulting meetings** falls on the target coach's **blocked
   week or date** (§11.2). No automatic §11.3 rebooking is attempted on a manual
   move (§11.3, "No rebooking on a manual move");
+- the target position is held by an **existing booking** from a modify-existing
+  run (§19.5), which is neither movable nor swappable;
 - the student's **class block is missing or unknown** (§5.3). This one is a
   deliberate narrowing of "every unassigned student can be placed": §5.3 sets
   these students aside *because* no timetable of theirs exists, so there is
@@ -987,3 +1015,196 @@ at least:
 8. All §9 and §11.5 invariants hold over an **edited** schedule: 4 meetings per assigned student, nothing in weeks 4/8/12, no coach double-booked, no overlap with the student's own class block, nothing on a blocked coach-week or coach-date.
 9. The exports reflect edits with **unchanged column sets**: the §7.1 appointment rows carry the new coach and instants, the §7.3 batch upload names the new coach and keeps its eight headers, and the §7.4 calendar puts the meeting in the new coach's file and not the old one's.
 10. An unedited student is untouched by another student's edit, including a §11.3 rescheduled row keeping its `Rescheduled From Week`.
+
+## 19. Modify an existing run (v1.12, normative)
+
+A third assignment mode, **Modify existing**, alongside auto-assign (§5.1) and
+pre-allocated (§5.2). It adds students to a term that has **already been
+scheduled**: the previous run's appointments are re-uploaded, treated as
+booked, and the students who still need a coach are placed around them under
+every rule in §4, §5 and §11. The run exports **only the students it added**.
+
+The case it exists for is the ordinary one: a cohort was scheduled and the
+files sent out, and a fortnight later sixteen more students arrive. Re-running
+the whole term would produce a second, different schedule for people who
+already have meetings in their calendars, so the tool takes the schedule that
+exists as given and fills the gaps around it.
+
+Modify-existing schedules by the **auto-assign rules** (§5.1 quota, §4.7 day
+balance). Nothing about the pre-allocated mode changes, and the pairings file
+is not used here.
+
+### 19.1 The extra upload
+
+One upload is added, and only in this mode: the **previous appointments
+export** — the §7.1 file the earlier run produced. The class schedule, coach
+availability and student list are uploaded exactly as in any other run.
+
+Required columns are the ones the schedule is rebuilt from: `Student Name`,
+`Contact SF ID (Student)`, `Student Email`, `Coach Name`, `Coach SF ID`,
+`Coach Email`, `Meeting Start Date & Time` and `Meeting End Date & Time`. A
+missing one rejects the file, naming it (§8). `Class Block`, `Service Name`,
+`Meeting Status` and `Rescheduled From Week` are read when present and ignored
+when not, so a file written with a §7.2 custom layout still works as long as it
+kept the columns above. `Contact SF ID` and `Student Contact SF ID` are
+accepted as spellings of `Contact SF ID (Student)`.
+
+**Times are read, never recomputed.** The exported instants are campus
+wall-clock times carrying their offset (§7.1), so the naive half of the value
+*is* the campus clock and is taken as it stands. The term week and the §4.2
+offset are derived from the date against the run's start Monday: week
+`floor(days ÷ 7) + 1`, and offset `((week − 1) mod 4) + 1`, which is exactly
+the inverse of §4.2 (weeks 4, 8 and 12 have no offset).
+
+Rows that disagree about one student — two names, two emails, two coaches for
+one Contact SF ID — are **warnings** naming both rows, and the first value is
+used. The file is not rejected for them: it describes meetings that have
+already happened or been sent out.
+
+### 19.2 Which students are scheduled
+
+The student list may hold the **whole cohort** or **only the new arrivals**;
+both work, and neither has to be edited before uploading. A student whose
+Contact SF ID appears in the previous export is **already scheduled**: they
+keep their coach, slot and offset exactly, they are not reassigned, and they
+are not in any export this run produces. Every other student in the list is
+**new**, and is assigned by §5.1 as usual.
+
+The two counts are reported on Review and Results: how many students the
+uploaded schedule already covers, and how many this run is placing.
+
+### 19.3 Flags: the existing schedule against the new uploads
+
+The uploaded coach availability and class schedule may no longer describe the
+term the existing bookings were made in. Every disagreement is **flagged and
+named**; none is corrected, and none stops the run. An existing booking is a
+meeting real people hold, so the tool reports and defers (§3.1's 13.5-hour rule
+takes the same position for the same reason).
+
+The flags, each naming the student, the coach and the time:
+
+- **outside availability** — the booking's (coach, weekday, start time) is not
+  a valid slot in the uploaded availability (§4.4);
+- **coach not found** — the coach holding bookings is not in the availability
+  file at all;
+- **class clash** — the booking overlaps a class in **that student's own class
+  block** (§4.4a); the message names the class and the block;
+- **class block unknown** — the booking overlaps a class in some block, and the
+  student's own block is in neither file, so the check cannot be completed. The
+  fix named is the student list;
+- **double booked** — two students hold the same (coach, weekday, start,
+  offset) place in the uploaded file;
+- **slot over capacity** — more than §4.5's three students sit in one (coach,
+  slot) cell in the uploaded file;
+- **split placement** — a student's meetings are not all at one (weekday, start
+  time), which is what a §11.3 rebooking leaves behind. Every one of their
+  meetings still holds its place;
+- **meeting count** — a student has other than the four meetings §4.2 gives
+  them;
+- **outside term** — a meeting's date is outside the 15 weeks from the start
+  date. It holds no place, because there is no week for it to hold one in.
+
+### 19.4 How the new students are placed
+
+The existing bookings enter the engine as two things, and nothing else:
+
+1. **Occupied places.** Every existing meeting occupies the (coach, weekday,
+   start time, offset) place its date resolves to, and no new student may be
+   given one. A meeting §11.3 moved therefore holds the place its *rebooked*
+   week names as well as its student's usual one — over-holding by one place,
+   never under-holding, because a place a coach is busy in for one week of an
+   offset cannot be sold to a student for all four.
+2. **Load.** The number of students each coach already holds.
+
+The §5.1 quota is then computed over the **whole cohort** — existing students
+plus new ones — and each coach's **top-up quota** is their share of that, less
+the students they already hold, capped by the places they have left. A coach
+already at or above their share takes no new student, and the students that
+leaves over are redistributed to the coaches with room, by FTE proportion,
+exactly as §5.1 redistributes a shortfall left by capping.
+
+The §4.7 day balance is likewise measured over the coach's **whole week**: the
+existing meetings count towards their day's share, so a top-up lands on the
+days a coach has least on. Every other rule binds unchanged — §4.4a class
+clashes, §4.5 slot capacity, §4.2 cadence, §11 blocked weeks and the §11.3
+post-pass, which runs over the new students' appointments only.
+
+Unassigned reasons are §5.1's, unchanged: a new student who cannot be placed
+because the term is full is `insufficient capacity`, and one for whom only
+their own class hours remain is `no free slot outside their class block`.
+
+### 19.5 Existing bookings on the Edit step
+
+The §17 Edit step works as it always has, over the students this run added. The
+existing bookings appear on the coach grid **in the cells they hold**, marked
+as existing, and are **not controls**:
+
+- a move onto a position an existing booking holds is **refused**, and the
+  refusal says it is an existing booking rather than reporting a double-book;
+- a **swap** with an existing booking is refused for the same reason: it
+  belongs to a schedule that has already been exported and sent out, and this
+  tool cannot un-send it;
+- every other §17.4 refusal and §17.6 warning is unchanged. The quota warning
+  measures the coach's **whole** load against their **cohort-wide** share, not
+  against the top-up.
+
+Moving an existing student is out of scope in the same sense as §10's other
+exclusions: the way to change their meeting is to change the run that made it.
+
+### 19.6 What is exported
+
+**Only the students this run added.** Every file the Export step produces
+covers exactly the students in `assignments` — the new ones — and nobody in the
+uploaded schedule:
+
+- the §7.1/§7.2 appointments export: four rows per newly scheduled student;
+- the §7.3 coach-assignments batch upload, which **is** offered in this mode
+  (it schedules by the auto-assign rules), one row per newly scheduled student,
+  with the same eight headers and four constants. `exportCoachAssignments`
+  accepts `auto` and `modify-existing`, and still refuses `pre-allocated`;
+- the §7.4 coach calendars: one `.ics` per coach holding that coach's **new**
+  meetings. The previous run's meetings were already exported and imported, and
+  the deterministic UIDs (§7.4) mean re-importing them would change nothing —
+  so repeating them in the file would only make the coach re-read a term they
+  already have.
+
+No export column set changes, and no export marks a row as new: the file is
+about meetings, and the fact that a run added them is on screen.
+
+On screen, the same scope applies to the §14 booking views and the Results
+summary — they read this run's appointments — while the **Existing schedule**
+card and the utilisation table give the term-wide totals, so a coach's real
+load is never under-reported.
+
+**Test expectations** are §20.
+
+## 20. Modify-existing tests (v1.12)
+
+tests.html must exercise the real parser, the real engine and the real overlay,
+and assert at least:
+
+1. An appointments file the app itself exported parses back with no errors, one
+   student per four rows, with each student's coach, weekday, start time and
+   offset recovered from the dates.
+2. `offsetForWeek` is the inverse of `weeksForOffset`, and weeks 4, 8 and 12
+   have no offset.
+3. A student the uploaded schedule already covers is not scheduled again —
+   whether the student list holds the whole cohort or only the new arrivals.
+4. No new student is given a place an existing booking holds.
+5. The top-up quota is the coach's FTE share of the whole cohort less what they
+   already hold, and a coach already at their share takes none while the others
+   absorb the remainder.
+6. The §4.7 day balance counts the meetings a coach already has, so a top-up
+   lands on their thinnest day.
+7. Each §19.3 flag, separately: outside availability, class clash in the
+   student's own block, coach not in the availability file, a meeting outside
+   the term, and a conflict inside the uploaded file itself.
+8. An existing booking occupies its grid position, is marked as existing, and
+   refuses both a move onto it and a swap with it.
+9. Every §9 invariant holds over the existing and new schedules **together**:
+   four meetings per student, nothing in weeks 4/8/12, no coach double-booked,
+   no meeting during a student's own class.
+10. The appointments export and the §7.3 batch upload cover the new students
+    and nobody else, with unchanged column sets, and the batch upload is
+    offered in this mode while pre-allocated still refuses it.
+11. The same files produce the same top-up twice.
