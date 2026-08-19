@@ -18,7 +18,9 @@ export const RIBBON_GROUPS = [
 /**
  * Builds the ribbon element.
  *
- * options.weekStates — { [week]: { blocked?: boolean, exceptions?: boolean } }
+ * options.weekStates — { [week]: { blocked?: boolean, everyone?: boolean, exceptions?: boolean } }
+ *   `everyone` marks a week this coach inherits from an "all coaches" block,
+ *   which is unblocked from the "All coaches" selection rather than here.
  * options.interactive — render week cells as buttons and call
  *   options.onToggleWeek(week) on click (excluded weeks are never clickable).
  */
@@ -68,7 +70,7 @@ function createWeekCell(week, state, interactive, onToggleWeek) {
   if (clickable) {
     cell.type = 'button';
     cell.setAttribute('aria-pressed', state.blocked ? 'true' : 'false');
-    cell.setAttribute('aria-label', `Week ${week}`);
+    cell.setAttribute('aria-label', state.everyone ? `Week ${week}, blocked for all coaches` : `Week ${week}`);
     if (onToggleWeek) cell.addEventListener('click', () => onToggleWeek(week));
   }
 
@@ -77,6 +79,10 @@ function createWeekCell(week, state, interactive, onToggleWeek) {
     cell.title = 'No meetings — excluded week';
   }
   if (state.blocked) cell.classList.add('wk-blocked');
+  if (state.everyone) {
+    cell.classList.add('wk-blocked-all');
+    cell.title = 'Blocked for all coaches';
+  }
   if (state.exceptions) cell.classList.add('wk-exceptions');
 
   return cell;

@@ -689,7 +689,9 @@ and the tool moves their meetings for you.
 On the **Review** step, press **Blocked weeks/dates**. A panel opens on the
 right:
 
-- Choose the **coach**.
+- Choose the **coach**, or **All coaches** at the top of the list to close a
+  week or date for everyone — a bank holiday, a whole-team away day, a campus
+  closure.
 - Click a week in the ribbon to block or unblock it, or type a **week number**
   (1–15) and press *Add week*.
 - Or pick a **date** and press *Add date*. The date must fall inside the term;
@@ -697,6 +699,13 @@ right:
   day move.
 - **Current blocks** lists everything blocked, for every coach, each with a
   *Remove* button. **Clear all blocks** empties the list.
+
+An **All coaches** block is stored once and covers every coach in the run,
+including any coach whose availability you upload afterwards. When you have a
+single coach selected, a week blocked for everyone still shows in their ribbon,
+outlined with a dashed border — it is theirs to see but not to change. Unblock
+it from the **All coaches** selection, or remove it from the **Current blocks**
+list, where it appears first under *All coaches*.
 
 Weeks 4, 8 and 12 never hold meetings, so blocking one does nothing — the panel
 says so and does not add it.

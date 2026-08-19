@@ -663,6 +663,29 @@ function setupUpload(key) {
 // Stored in the form the panel edits — { coach, kind: 'week', week } or
 // { coach, kind: 'date', date } — rather than pre-resolved, so a date block
 // still points at the right week if the term start date changes later.
+//
+// `coach` is either a coach name or ALL_COACHES, the "all coaches" selection.
+// An all-coaches block is stored once and expanded to every coach the run
+// knows about at resolve time, so it also covers coaches whose availability
+// is uploaded after the block was added.
+
+/** The coach value standing for "every coach" (SPEC.md §11.2). */
+const ALL_COACHES = '*';
+const ALL_COACHES_LABEL = 'All coaches';
+
+function isAllCoaches(coach) {
+  return coach === ALL_COACHES;
+}
+
+/** The name shown for a block's coach, so the sentinel never reaches the screen. */
+function coachLabel(coach) {
+  return isAllCoaches(coach) ? ALL_COACHES_LABEL : coach;
+}
+
+/** Subject of a sentence about a coach selection: "Ana is", "All coaches are". */
+function blockSubject(coach) {
+  return isAllCoaches(coach) ? 'All coaches are' : `${coach} is`;
+}
 
 function sanitiseBlocks(list) {
   const seen = new Set();
@@ -692,20 +715,39 @@ function blockKey(block) {
 }
 
 /**
- * A stored block in the engine's `{coach, week, day}` form (SPEC.md §11.2:
+ * Where a stored block falls in the term, as `{week, day}` (SPEC.md §11.2:
  * a date is "internally resolved to coach + week + weekday"). Returns null
  * for a date that cannot be placed in the term yet — no start date chosen, or
  * a date outside the 15 weeks.
  */
-function resolveBlock(block) {
-  if (block.kind === 'week') return { coach: block.coach, week: block.week, day: null };
+function blockPlacement(block) {
+  if (block.kind === 'week') return { week: block.week, day: null };
   if (!state.startDate) return null;
   const at = weekAndDayForDate(block.date, state.startDate);
-  return at ? { coach: block.coach, week: at.week, day: at.day } : null;
+  return at ? { week: at.week, day: at.day } : null;
 }
 
+/** The coaches a stored block applies to — one, or every coach in the run. */
+function coachesForBlock(block) {
+  return isAllCoaches(block.coach) ? knownCoaches() : [block.coach];
+}
+
+/**
+ * Every block in the engine's `{coach, week, day}` form, with each all-coaches
+ * block expanded into one entry per coach. This is the only path from the
+ * panel to the engine, so the expansion covers the §11.3 post-pass and the
+ * §17.4 manual-move guard alike.
+ */
 function resolvedBlocks() {
-  return state.blocks.map(resolveBlock).filter(Boolean);
+  const resolved = [];
+  state.blocks.forEach((block) => {
+    const at = blockPlacement(block);
+    if (!at) return;
+    coachesForBlock(block).forEach((coach) => {
+      resolved.push({ coach, week: at.week, day: at.day });
+    });
+  });
+  return resolved;
 }
 
 /** The line shown for a block in the panel's list, with any no-op caveat. */
@@ -716,8 +758,8 @@ function describeBlock(block) {
       note: EXCLUDED_WEEKS.includes(block.week) ? 'No meetings in this week, so this has no effect.' : '',
     };
   }
-  const resolved = resolveBlock(block);
-  if (!resolved) {
+  const at = blockPlacement(block);
+  if (!at) {
     return {
       text: state.startDate ? formatReadable(block.date) : block.date,
       note: state.startDate
@@ -726,8 +768,8 @@ function describeBlock(block) {
     };
   }
   return {
-    text: `${formatReadable(block.date)} (week ${resolved.week})`,
-    note: EXCLUDED_WEEKS.includes(resolved.week) ? 'No meetings in this week, so this has no effect.' : '',
+    text: `${formatReadable(block.date)} (week ${at.week})`,
+    note: EXCLUDED_WEEKS.includes(at.week) ? 'No meetings in this week, so this has no effect.' : '',
   };
 }
 
@@ -774,42 +816,86 @@ function showBlockingNotice(message) {
   blockingNotice.hidden = !message;
 }
 
-/** Coaches offered in the panel: those with availability, plus any a stored block still names. */
-function blockingCoaches() {
+/** Real coaches in the run: those with availability, plus any a stored block still names. */
+function knownCoaches() {
   const names = [];
   rowsFor('coachAvailability').forEach((row) => {
     if (!names.includes(row.coachName)) names.push(row.coachName);
   });
   state.blocks.forEach((block) => {
-    if (!names.includes(block.coach)) names.push(block.coach);
+    if (!isAllCoaches(block.coach) && !names.includes(block.coach)) names.push(block.coach);
   });
   return names;
 }
 
-function selectedBlockingCoach(coaches) {
-  if (state.blockingCoach && coaches.includes(state.blockingCoach)) return state.blockingCoach;
-  return coaches[0] || null;
+/**
+ * The panel's coach options. "All coaches" is always offered — including
+ * before any availability is uploaded, since an all-coaches block applies to
+ * whichever coaches the run turns out to have.
+ */
+function blockingCoachOptions() {
+  return [ALL_COACHES, ...knownCoaches()];
 }
 
-/** Weeks the given coach is blocked in, as ribbon week states. */
+/**
+ * The selection the panel edits. A named coach is preferred as the default so
+ * that opening the panel and clicking a week blocks one coach, not everyone.
+ */
+function selectedBlockingCoach(options) {
+  if (state.blockingCoach && options.includes(state.blockingCoach)) return state.blockingCoach;
+  return options.find((option) => !isAllCoaches(option)) || ALL_COACHES;
+}
+
+/** Weeks blocked for every coach, whoever the panel is currently showing. */
+function allCoachWeeks() {
+  const weeks = new Set();
+  state.blocks.forEach((block) => {
+    if (!isAllCoaches(block.coach)) return;
+    const at = blockPlacement(block);
+    if (at) weeks.add(at.week);
+  });
+  return weeks;
+}
+
+/**
+ * Weeks the current selection is blocked in, as ribbon week states. A named
+ * coach also sees the weeks blocked for all coaches, marked `everyone` so the
+ * cell reads as inherited rather than theirs.
+ */
 function weekStatesForCoach(coach, exceptionWeeks = new Set()) {
+  const viewingAll = isAllCoaches(coach);
+  const own = new Set();
+  const inherited = viewingAll ? new Set() : allCoachWeeks();
+  state.blocks.forEach((block) => {
+    if (block.coach !== coach) return;
+    const at = blockPlacement(block);
+    if (at) own.add(at.week);
+  });
+
   const states = {};
-  resolvedBlocks()
-    .filter((block) => block.coach === coach)
-    .forEach((block) => {
-      states[block.week] = { ...(states[block.week] || {}), blocked: true };
-    });
+  own.forEach((week) => {
+    states[week] = { blocked: true };
+  });
+  inherited.forEach((week) => {
+    if (!states[week]) states[week] = { blocked: true, everyone: true };
+  });
   exceptionWeeks.forEach((week) => {
     states[week] = { ...(states[week] || {}), exceptions: true };
   });
   return states;
 }
 
-/** Toggling a week cell blocks it, or clears whatever already blocks it. */
+/**
+ * Toggling a week cell blocks it for the current selection, or clears what
+ * that selection already blocks. A week a coach only inherits from an
+ * all-coaches block is left alone: it is unblocked from the "All coaches"
+ * selection, not from one coach's row.
+ */
 function toggleWeekForCoach(coach, week) {
   const existing = state.blocks.filter((block) => {
-    const resolved = resolveBlock(block);
-    return resolved && resolved.coach === coach && resolved.week === week;
+    if (block.coach !== coach) return false;
+    const at = blockPlacement(block);
+    return Boolean(at) && at.week === week;
   });
   if (existing.length > 0) {
     const keys = new Set(existing.map(blockKey));
@@ -819,6 +905,10 @@ function toggleWeekForCoach(coach, week) {
       showBlockingNotice('');
       refreshComputedSteps();
     });
+  }
+  if (!isAllCoaches(coach) && allCoachWeeks().has(week)) {
+    showBlockingNotice(`Week ${week} is blocked for all coaches. Choose "${ALL_COACHES_LABEL}" to unblock it.`);
+    return Promise.resolve(false);
   }
   showBlockingNotice('');
   return addBlock({ coach, kind: 'week', week });
@@ -834,15 +924,15 @@ function termDateRange() {
 }
 
 function renderBlockingPanel(exceptionWeeksByCoach = new Map()) {
-  const coaches = blockingCoaches();
-  const coach = selectedBlockingCoach(coaches);
+  const options = blockingCoachOptions();
+  const coach = selectedBlockingCoach(options);
   state.blockingCoach = coach;
 
-  blockingCoachSelect.innerHTML = coaches.length
-    ? coaches.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('')
-    : '<option value="">No coaches yet</option>';
-  blockingCoachSelect.disabled = coaches.length === 0;
-  if (coach) blockingCoachSelect.value = coach;
+  blockingCoachSelect.innerHTML = options
+    .map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(coachLabel(name))}</option>`)
+    .join('');
+  blockingCoachSelect.disabled = false;
+  blockingCoachSelect.value = coach;
 
   const canEdit = Boolean(coach);
   blockingAddWeek.disabled = !canEdit;
@@ -860,9 +950,9 @@ function renderBlockingPanel(exceptionWeeksByCoach = new Map()) {
   }
 
   renderTermRibbon(blockingRibbon, {
-    label: coach ? `Blocked weeks for ${coach}` : 'Term weeks',
+    label: coach ? `Blocked weeks for ${coachLabel(coach)}` : 'Term weeks',
     interactive: canEdit,
-    weekStates: weekStatesForCoach(coach, exceptionWeeksByCoach.get(coach) || new Set()),
+    weekStates: weekStatesForCoach(coach, exceptionWeeksForSelection(coach, exceptionWeeksByCoach)),
     onToggleWeek: (week) =>
       guardedAsync('blocking or unblocking a week', () => toggleWeekForCoach(coach, week))(),
   });
@@ -874,25 +964,29 @@ function renderBlockingPanel(exceptionWeeksByCoach = new Map()) {
     empty.textContent = 'No weeks or dates are blocked.';
     blockingList.appendChild(empty);
   } else {
-    // Grouped by coach, each coach's blocks in the order they were added.
+    // Grouped by coach, each coach's blocks in the order they were added, with
+    // the all-coaches group first because it covers every group below it.
     const byCoach = new Map();
     state.blocks.forEach((block) => {
       if (!byCoach.has(block.coach)) byCoach.set(block.coach, []);
       byCoach.get(block.coach).push(block);
     });
-    byCoach.forEach((blocks, name) => {
+    const groups = [...byCoach.entries()].sort(
+      ([a], [b]) => Number(isAllCoaches(b)) - Number(isAllCoaches(a))
+    );
+    groups.forEach(([name, blocks]) => {
       blocks.forEach((block) => {
         const { text, note } = describeBlock(block);
         const item = document.createElement('li');
         const label = document.createElement('span');
-        label.innerHTML = `${escapeHtml(name)} — <span class="mono">${escapeHtml(text)}</span>${
+        label.innerHTML = `${escapeHtml(coachLabel(name))} — <span class="mono">${escapeHtml(text)}</span>${
           note ? `<br /><span class="block-stale">${escapeHtml(note)}</span>` : ''
         }`;
         const remove = document.createElement('button');
         remove.type = 'button';
         remove.className = 'btn btn-destructive btn-small';
         remove.textContent = 'Remove';
-        remove.setAttribute('aria-label', `Remove the block on ${name}, ${text}`);
+        remove.setAttribute('aria-label', `Remove the block on ${coachLabel(name)}, ${text}`);
         remove.addEventListener(
           'click',
           guardedAsync('removing a block', () => removeBlockByKey(blockKey(block)))
@@ -905,13 +999,31 @@ function renderBlockingPanel(exceptionWeeksByCoach = new Map()) {
 
   blockingClear.disabled = state.blocks.length === 0;
 
-  const coachCount = new Set(state.blocks.map((block) => block.coach)).size;
-  blockingSummary.textContent =
-    state.blocks.length === 0
-      ? 'No weeks or dates are blocked.'
-      : `${state.blocks.length} block${state.blocks.length === 1 ? '' : 's'} across ${coachCount} coach${
-          coachCount === 1 ? '' : 'es'
-        }.`;
+  blockingSummary.textContent = blockingSummaryText();
+}
+
+/** "3 blocks across all coaches and 1 coach." — the panel's one-line state. */
+function blockingSummaryText() {
+  if (state.blocks.length === 0) return 'No weeks or dates are blocked.';
+  const count = `${state.blocks.length} block${state.blocks.length === 1 ? '' : 's'}`;
+  const named = new Set(
+    state.blocks.filter((block) => !isAllCoaches(block.coach)).map((block) => block.coach)
+  ).size;
+  const namedText = `${named} coach${named === 1 ? '' : 'es'}`;
+  const hasAll = state.blocks.some((block) => isAllCoaches(block.coach));
+  if (!hasAll) return `${count} across ${namedText}.`;
+  return named === 0 ? `${count} across all coaches.` : `${count} across all coaches and ${namedText}.`;
+}
+
+/**
+ * The exception weeks to mark on the ribbon: one coach's own, or — when "All
+ * coaches" is selected — every coach's, since the row then stands for all.
+ */
+function exceptionWeeksForSelection(coach, exceptionWeeksByCoach) {
+  if (!isAllCoaches(coach)) return exceptionWeeksByCoach.get(coach) || new Set();
+  const weeks = new Set();
+  exceptionWeeksByCoach.forEach((coachWeeks) => coachWeeks.forEach((week) => weeks.add(week)));
+  return weeks;
 }
 
 function setBlockingSheetOpen(open) {
@@ -967,7 +1079,7 @@ function setupBlockingPanel() {
         return;
       }
       const added = await addBlock({ coach, kind: 'week', week });
-      showBlockingNotice(added ? '' : `${coach} is already blocked for week ${week}.`);
+      showBlockingNotice(added ? '' : `${blockSubject(coach)} already blocked for week ${week}.`);
       if (added) blockingWeekInput.value = '';
     })
   );
@@ -1002,7 +1114,7 @@ function setupBlockingPanel() {
         return;
       }
       const added = await addBlock({ coach, kind: 'date', date });
-      showBlockingNotice(added ? '' : `${coach} is already blocked on ${formatReadable(date)}.`);
+      showBlockingNotice(added ? '' : `${blockSubject(coach)} already blocked on ${formatReadable(date)}.`);
       if (added) blockingDateInput.value = '';
     })
   );
