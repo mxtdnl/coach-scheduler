@@ -324,6 +324,13 @@ a:hover {
   text-decoration: line-through;
 }
 
+/* A week a coach inherits from an "all coaches" block: blocked, but not
+   theirs to toggle (SPEC.md §11.2). */
+.wk-blocked-all {
+  border-style: dashed;
+  background: var(--surface);
+}
+
 .wk-exceptions {
   position: relative;
 }
